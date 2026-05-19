@@ -49,8 +49,8 @@
                                 </li>
                                 <li>
                                     <button type="button" class="settings-sidebar-link" data-target="settingsCloudflareSection" onclick="scrollSettingsSection('settingsCloudflareSection', this)">
-                                        <strong>cf-mail 临时邮箱</strong>
-                                        <span>Worker 域名、邮箱域名列表和外部 API Key</span>
+                                        <strong>Cloudflare 临时邮箱</strong>
+                                        <span>Worker 域名、邮箱域名列表和管理员密码</span>
                                     </button>
                                 </li>
                             </ul>
@@ -519,15 +519,15 @@
 
                 <section class="settings-section" id="settingsCloudflareSection">
                     <div class="settings-section-head">
-                        <span class="settings-section-kicker">cf-mail</span>
-                        <h4>cf-mail 临时邮箱设置</h4>
-                        <p>配置自建 cf-mail Worker 的连接信息与外部 API Key。</p>
+                        <span class="settings-section-kicker">Cloudflare</span>
+                        <h4>Cloudflare 临时邮箱设置</h4>
+                        <p>配置自建 Cloudflare Temp Email 实例的连接信息与管理凭证。</p>
                     </div>
                     <div class="settings-panel settings-panel-grid">
                         <div class="form-group">
                             <label class="form-label">Worker 域名</label>
                             <input type="text" class="form-input" id="settingsCloudflareWorkerDomain" placeholder="your-worker.example.workers.dev">
-                            <div class="form-hint">填写 cf-mail Worker 域名；可带或不带 <code>https://</code>。</div>
+                            <div class="form-hint">只填写域名部分，不带 <code>https://</code>。</div>
                         </div>
                         <div class="form-group settings-form-span-full">
                             <label class="form-label">邮箱域名列表</label>
@@ -535,9 +535,9 @@
                             <div class="form-hint">多个域名使用英文逗号分隔。</div>
                         </div>
                         <div class="form-group">
-                            <label class="form-label">外部 API Key</label>
-                            <input type="password" class="form-input" id="settingsCloudflareAdminPassword" placeholder="cf-mail 设置中的 API Key">
-                            <div class="form-hint">用于调用 cf-mail <code>/api/external/*</code> 接口。</div>
+                            <label class="form-label">管理员密码</label>
+                            <input type="password" class="form-input" id="settingsCloudflareAdminPassword" placeholder="对应 Cloudflare Temp Email 的 ADMIN_PASSWORD">
+                            <div class="form-hint">用于调用 <code>/admin/new_address</code> 等管理接口。</div>
                         </div>
                     </div>
                 </section>

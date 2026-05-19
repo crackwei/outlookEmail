@@ -39,20 +39,6 @@ def get_group_by_id(group_id: int) -> Optional[Dict]:
     return dict(row) if row else None
 
 
-def get_group_by_name(group_name: str) -> Optional[Dict]:
-    """根据名称获取分组，供外部 API 通过人类可读分组名取邮箱。"""
-    normalized_name = str(group_name or '').strip()
-    if not normalized_name:
-        return None
-    db = get_db()
-    cursor = db.execute(
-        'SELECT * FROM groups WHERE LOWER(name) = LOWER(?) LIMIT 1',
-        (normalized_name,)
-    )
-    row = cursor.fetchone()
-    return dict(row) if row else None
-
-
 def get_movable_group_ids(db=None, exclude_group_id: Optional[int] = None) -> List[int]:
     """获取可排序分组 ID 列表（不含临时邮箱）"""
     database = db or get_db()
@@ -1254,34 +1240,6 @@ def load_projects() -> List[Dict[str, Any]]:
     return [serialize_project_row(row, db=db) for row in rows]
 
 
-def build_project_scope_account_entries(account_rows: List[Any], use_alias_email: bool = False) -> List[Dict[str, Any]]:
-    """把账号行展开成项目可入池邮箱；开启别名模式时每个别名独立入池。"""
-    if not parse_bool_flag(use_alias_email, False):
-        return [dict(row) for row in account_rows]
-
-    scope_accounts: List[Dict[str, Any]] = []
-    for row in account_rows:
-        aliases = get_account_aliases(int(row['id']))
-        if aliases:
-            for alias_email in aliases:
-                normalized_alias = normalize_email_address(alias_email)
-                if not normalized_alias:
-                    continue
-                scope_accounts.append({
-                    'id': row['id'],
-                    'email': normalized_alias,
-                    'group_id': row['group_id'],
-                })
-            continue
-        scope_accounts.append({
-            'id': row['id'],
-            'email': row['email'],
-            'group_id': row['group_id'],
-        })
-
-    return scope_accounts
-
-
 def get_project_scope_accounts(project_id: int, db=None) -> List[sqlite3.Row]:
     database = db or get_db()
     project_row = database.execute(
@@ -1311,34 +1269,30 @@ def get_project_scope_accounts(project_id: int, db=None) -> List[sqlite3.Row]:
             '''
         ).fetchall()
 
-    return build_project_scope_account_entries(
-        account_rows,
-        parse_bool_flag(project_row['use_alias_email'], False),
-    )
+    if not parse_bool_flag(project_row['use_alias_email'], False):
+        return [dict(row) for row in account_rows]
 
+    scope_accounts: List[Dict[str, Any]] = []
+    for row in account_rows:
+        aliases = get_account_aliases(int(row['id']))
+        if aliases:
+            for alias_email in aliases:
+                normalized_alias = normalize_email_address(alias_email)
+                if not normalized_alias:
+                    continue
+                scope_accounts.append({
+                    'id': row['id'],
+                    'email': normalized_alias,
+                    'group_id': row['group_id'],
+                })
+            continue
+        scope_accounts.append({
+            'id': row['id'],
+            'email': row['email'],
+            'group_id': row['group_id'],
+        })
 
-def get_project_group_scope_accounts(project_id: int, group_id: int, db=None) -> List[Dict[str, Any]]:
-    database = db or get_db()
-    project_row = database.execute(
-        'SELECT id, use_alias_email FROM projects WHERE id = ?',
-        (project_id,)
-    ).fetchone()
-    if not project_row:
-        return []
-
-    account_rows = database.execute(
-        '''
-        SELECT DISTINCT a.id, a.email, a.group_id
-        FROM accounts a
-        WHERE a.group_id = ?
-        ORDER BY a.id ASC
-        ''',
-        (group_id,)
-    ).fetchall()
-    return build_project_scope_account_entries(
-        account_rows,
-        parse_bool_flag(project_row['use_alias_email'], False),
-    )
+    return scope_accounts
 
 
 def update_project_group_scopes(project_id: int, group_ids: List[int], db=None) -> None:
@@ -1405,7 +1359,7 @@ def reconcile_deleted_project_accounts(project_id: int, db=None) -> int:
     return len(rows)
 
 
-def sync_project_account_rows(project_id: int, account_rows: List[Dict[str, Any]], db=None) -> int:
+def sync_project_scope(project_id: int, db=None) -> int:
     database = db or get_db()
     existing_rows = database.execute(
         '''
@@ -1421,7 +1375,7 @@ def sync_project_account_rows(project_id: int, account_rows: List[Dict[str, Any]
     now_str = project_now_iso()
     added_count = 0
 
-    for account_row in account_rows:
+    for account_row in get_project_scope_accounts(project_id, db=database):
         normalized_email = normalize_email_address(account_row['email'])
         if not normalized_email:
             continue
@@ -1497,20 +1451,6 @@ def sync_project_account_rows(project_id: int, account_rows: List[Dict[str, Any]
         )
 
     return added_count
-
-
-def sync_project_scope(project_id: int, db=None) -> int:
-    database = db or get_db()
-    return sync_project_account_rows(project_id, get_project_scope_accounts(project_id, db=database), db=database)
-
-
-def sync_project_group_scope(project_id: int, group_id: int, db=None) -> int:
-    database = db or get_db()
-    return sync_project_account_rows(
-        project_id,
-        get_project_group_scope_accounts(project_id, group_id, db=database),
-        db=database,
-    )
 
 
 def start_project(
@@ -1785,457 +1725,6 @@ def claim_project_account(project_key: str, caller_id: str, task_id: str, lease_
             'claim_token': claim_token,
             'claimed_at': now_str,
             'lease_expires_at': lease_expires_at,
-        }
-    except Exception:
-        db.rollback()
-        raise
-
-
-def normalize_project_claim_count(count: Any, default: int = 1, maximum: int = 100) -> int:
-    try:
-        value = int(count if count not in (None, '') else default)
-    except (TypeError, ValueError):
-        value = default
-    return max(1, min(value, maximum))
-
-
-def normalize_project_lease_seconds(lease_seconds: Any, default: int = 600, maximum: int = 3600) -> int:
-    try:
-        value = int(lease_seconds if lease_seconds not in (None, '') else default)
-    except (TypeError, ValueError):
-        value = default
-    return max(1, min(value, maximum))
-
-
-def ensure_project_row_for_api(project_key: str, db, *, group_id: Optional[int] = None,
-                               name: Optional[str] = None, description: Optional[str] = None,
-                               use_alias_email: Optional[bool] = None,
-                               use_alias_email_provided: bool = False) -> sqlite3.Row:
-    normalized_key = normalize_project_key(project_key)
-    if not normalized_key:
-        raise ValueError('project_key 不能为空')
-
-    now_str = project_now_iso()
-    clean_name = sanitize_input((name or '').strip(), max_length=100) if name is not None else ''
-    clean_description = sanitize_input(description or '', max_length=500) if description is not None else ''
-    existing = db.execute(
-        'SELECT * FROM projects WHERE project_key = ? LIMIT 1',
-        (normalized_key,)
-    ).fetchone()
-
-    if existing is None:
-        scope_mode = 'groups' if group_id is not None else 'all'
-        cursor = db.execute(
-            '''
-            INSERT INTO projects (
-                name, project_key, description, scope_mode, use_alias_email, status,
-                last_scope_synced_at, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)
-            ''',
-            (
-                clean_name or normalized_key,
-                normalized_key,
-                clean_description,
-                scope_mode,
-                int(parse_bool_flag(use_alias_email, False)),
-                now_str,
-                now_str,
-                now_str,
-            )
-        )
-        project_id = cursor.lastrowid
-        if group_id is not None:
-            db.execute(
-                '''
-                INSERT OR IGNORE INTO project_group_scopes (project_id, group_id, created_at)
-                VALUES (?, ?, ?)
-                ''',
-                (project_id, group_id, now_str)
-            )
-        return db.execute('SELECT * FROM projects WHERE id = ?', (project_id,)).fetchone()
-
-    project_id = existing['id']
-    scope_mode = existing['scope_mode'] or 'all'
-    if group_id is not None and scope_mode != 'all':
-        scope_mode = 'groups'
-        db.execute(
-            '''
-            INSERT OR IGNORE INTO project_group_scopes (project_id, group_id, created_at)
-            VALUES (?, ?, ?)
-            ''',
-            (project_id, group_id, now_str)
-        )
-
-    effective_use_alias_email = parse_bool_flag(existing['use_alias_email'], False)
-    if use_alias_email_provided:
-        effective_use_alias_email = parse_bool_flag(use_alias_email, False)
-
-    db.execute(
-        '''
-        UPDATE projects
-        SET name = ?,
-            description = ?,
-            scope_mode = ?,
-            use_alias_email = ?,
-            last_scope_synced_at = ?,
-            updated_at = ?
-        WHERE id = ?
-        ''',
-        (
-            clean_name or existing['name'],
-            clean_description if description is not None else (existing['description'] or ''),
-            scope_mode,
-            int(effective_use_alias_email),
-            now_str,
-            now_str,
-            project_id,
-        )
-    )
-    return db.execute('SELECT * FROM projects WHERE id = ?', (project_id,)).fetchone()
-
-
-def choose_project_account_email(project_row: sqlite3.Row, account: Dict[str, Any],
-                                 requested_email: str = '') -> str:
-    primary_email = normalize_email_address(account.get('email', ''))
-    if parse_bool_flag(project_row['use_alias_email'], False):
-        normalized_requested = normalize_email_address(requested_email)
-        aliases = {normalize_email_address(alias) for alias in account.get('aliases', [])}
-        if normalized_requested and normalized_requested in aliases:
-            return normalized_requested
-        matched_alias = normalize_email_address(account.get('matched_alias', ''))
-        if matched_alias:
-            return matched_alias
-    return primary_email
-
-
-def sync_single_project_account_for_api(project_row: sqlite3.Row, account: Dict[str, Any],
-                                        requested_email: str = '', db=None) -> Optional[sqlite3.Row]:
-    database = db or get_db()
-    project_email = choose_project_account_email(project_row, account, requested_email)
-    if not project_email:
-        return None
-
-    sync_project_account_rows(
-        project_row['id'],
-        [{
-            'id': account['id'],
-            'email': project_email,
-            'group_id': account.get('group_id'),
-        }],
-        db=database,
-    )
-    return database.execute(
-        '''
-        SELECT *
-        FROM project_accounts
-        WHERE project_id = ? AND normalized_email = ?
-        LIMIT 1
-        ''',
-        (project_row['id'], normalize_email_address(project_email))
-    ).fetchone()
-
-
-def serialize_project_claim_account(row: sqlite3.Row, claim_token: str = '',
-                                    claimed_at: str = '', lease_expires_at: str = '',
-                                    project_status: str = '') -> Dict[str, Any]:
-    use_alias_email = parse_bool_flag(row['use_alias_email'], False)
-    primary_email = row['email'] or ''
-    email_value = row['email_snapshot'] if use_alias_email else (primary_email or row['email_snapshot'])
-    return {
-        'project_key': row['project_key'],
-        'project_account_id': row['project_account_id'],
-        'account_id': row['account_id'],
-        'email': email_value,
-        'primary_email': primary_email,
-        'group_id': row['group_id'] if row['group_id'] is not None else row['source_group_id'],
-        'group_name': row['group_name'] or '',
-        'provider': row['provider'] or '',
-        'account_type': row['account_type'] or '',
-        'remark': row['remark'] or '',
-        'project_status': project_status or row['project_status'],
-        'claim_token': claim_token,
-        'claimed_at': claimed_at,
-        'lease_expires_at': lease_expires_at,
-    }
-
-
-def claim_project_accounts(project_key: str, *, group_id: Optional[int] = None, count: Any = 1,
-                           caller_id: str = '', task_id: str = '', lease_seconds: Any = 600,
-                           mark_used: bool = False, use_alias_email: Optional[bool] = None,
-                           use_alias_email_provided: bool = False) -> List[Dict[str, Any]]:
-    normalized_key = normalize_project_key(project_key)
-    if not normalized_key:
-        raise ValueError('project_key 不能为空')
-
-    normalized_count = normalize_project_claim_count(count)
-    normalized_lease_seconds = normalize_project_lease_seconds(lease_seconds)
-    caller = str(caller_id or '').strip() or 'external-api'
-    task = str(task_id or '').strip() or ('task_' + secrets.token_urlsafe(8))
-    db = get_db()
-    now = datetime.now(timezone.utc)
-    now_str = now.isoformat()
-    lease_expires_at = (now + timedelta(seconds=normalized_lease_seconds)).isoformat()
-
-    try:
-        db.execute('BEGIN IMMEDIATE')
-        project = ensure_project_row_for_api(
-            normalized_key,
-            db,
-            group_id=group_id,
-            use_alias_email=use_alias_email,
-            use_alias_email_provided=use_alias_email_provided,
-        )
-        if not project or project['status'] != 'active':
-            db.rollback()
-            return []
-
-        reconcile_deleted_project_accounts(project['id'], db=db)
-        if group_id is not None:
-            sync_project_group_scope(project['id'], group_id, db=db)
-        else:
-            sync_project_scope(project['id'], db=db)
-        recycle_expired_project_claims(db=db)
-
-        group_clause = ''
-        params: List[Any] = [project['id']]
-        if group_id is not None:
-            group_clause = 'AND a.group_id = ?'
-            params.append(group_id)
-
-        done_account_clause = ''
-        if not parse_bool_flag(project['use_alias_email'], False):
-            done_account_clause = '''
-              AND NOT EXISTS (
-                    SELECT 1 FROM project_accounts pa_done
-                    WHERE pa_done.project_id = pa.project_id
-                      AND pa_done.account_id = pa.account_id
-                      AND pa_done.status = 'done'
-                      AND pa_done.id != pa.id
-              )
-            '''
-
-        params.append(normalized_count)
-        rows = db.execute(
-            f'''
-            SELECT
-                pa.id AS project_account_id,
-                pa.project_id,
-                pa.account_id,
-                pa.normalized_email,
-                pa.email_snapshot,
-                pa.status AS project_status,
-                pa.source_group_id,
-                p.project_key,
-                p.use_alias_email,
-                a.email,
-                a.group_id,
-                a.remark,
-                a.status AS account_status,
-                a.provider,
-                a.account_type,
-                g.name AS group_name
-            FROM project_accounts pa
-            JOIN projects p ON p.id = pa.project_id
-            JOIN accounts a ON a.id = pa.account_id
-            LEFT JOIN groups g ON g.id = a.group_id
-            WHERE pa.project_id = ?
-              AND pa.status = 'toClaim'
-              AND a.status = 'active'
-              {group_clause}
-              AND NOT EXISTS (
-                    SELECT 1 FROM project_accounts pa_claiming
-                    WHERE pa_claiming.account_id = pa.account_id
-                      AND pa_claiming.status = 'claiming'
-                      AND pa_claiming.id != pa.id
-              )
-              {done_account_clause}
-            ORDER BY pa.updated_at ASC, pa.id ASC
-            LIMIT ?
-            ''',
-            params,
-        ).fetchall()
-
-        accounts: List[Dict[str, Any]] = []
-        for row in rows:
-            if mark_used:
-                db.execute(
-                    '''
-                    UPDATE project_accounts
-                    SET status = 'done',
-                        claim_token = NULL,
-                        claimed_at = NULL,
-                        lease_expires_at = NULL,
-                        caller_id = '',
-                        task_id = '',
-                        last_result = 'success',
-                        last_result_detail = 'marked_on_get',
-                        claim_count = claim_count + 1,
-                        first_claimed_at = COALESCE(first_claimed_at, ?),
-                        last_claimed_at = ?,
-                        done_at = ?,
-                        updated_at = ?
-                    WHERE id = ?
-                    ''',
-                    (now_str, now_str, now_str, now_str, row['project_account_id'])
-                )
-                add_project_event(
-                    row['project_id'],
-                    row['normalized_email'],
-                    'claim_mark_used',
-                    account_id=row['account_id'],
-                    project_account_id=row['project_account_id'],
-                    from_status='toClaim',
-                    to_status='done',
-                    caller_id=caller,
-                    task_id=task,
-                    detail={'mark_on_get': True},
-                    db=db,
-                )
-                accounts.append(serialize_project_claim_account(row, project_status='done'))
-                continue
-
-            claim_token = 'pclm_' + secrets.token_urlsafe(9)
-            db.execute(
-                '''
-                UPDATE project_accounts
-                SET status = 'claiming',
-                    caller_id = ?,
-                    task_id = ?,
-                    claim_token = ?,
-                    claimed_at = ?,
-                    lease_expires_at = ?,
-                    claim_count = claim_count + 1,
-                    first_claimed_at = COALESCE(first_claimed_at, ?),
-                    last_claimed_at = ?,
-                    updated_at = ?
-                WHERE id = ?
-                ''',
-                (
-                    caller,
-                    task,
-                    claim_token,
-                    now_str,
-                    lease_expires_at,
-                    now_str,
-                    now_str,
-                    now_str,
-                    row['project_account_id'],
-                )
-            )
-            add_project_event(
-                row['project_id'],
-                row['normalized_email'],
-                'claim',
-                account_id=row['account_id'],
-                project_account_id=row['project_account_id'],
-                from_status='toClaim',
-                to_status='claiming',
-                caller_id=caller,
-                task_id=task,
-                claim_token=claim_token,
-                detail={'lease_seconds': normalized_lease_seconds},
-                db=db,
-            )
-            accounts.append(
-                serialize_project_claim_account(
-                    row,
-                    claim_token=claim_token,
-                    claimed_at=now_str,
-                    lease_expires_at=lease_expires_at,
-                    project_status='claiming',
-                )
-            )
-
-        db.commit()
-        return accounts
-    except Exception:
-        db.rollback()
-        raise
-
-
-def set_project_account_direct_status(project_key: str, account: Dict[str, Any], to_status: str,
-                                      action: str, detail: str = '', requested_email: str = '',
-                                      caller_id: str = '', task_id: str = '',
-                                      allowed_from_statuses: Optional[set] = None) -> Optional[Dict[str, Any]]:
-    if to_status not in PROJECT_ACCOUNT_STATUSES:
-        return None
-    db = get_db()
-    now_str = project_now_iso()
-    normalized_key = normalize_project_key(project_key)
-    try:
-        db.execute('BEGIN IMMEDIATE')
-        project = ensure_project_row_for_api(
-            normalized_key,
-            db,
-            group_id=account.get('group_id'),
-        )
-        row = sync_single_project_account_for_api(project, account, requested_email, db=db)
-        if not row:
-            db.rollback()
-            return None
-
-        from_status = row['status'] or 'toClaim'
-        if from_status == 'deleted' or (allowed_from_statuses is not None and from_status not in allowed_from_statuses):
-            db.rollback()
-            return None
-
-        update_fields = '''
-            status = ?,
-            claim_token = NULL,
-            claimed_at = NULL,
-            lease_expires_at = NULL,
-            caller_id = '',
-            task_id = '',
-            updated_at = ?
-        '''
-        params: List[Any] = [to_status, now_str]
-        if to_status == 'done':
-            update_fields += ''',
-                last_result = 'success',
-                last_result_detail = ?,
-                done_at = ?
-            '''
-            params.extend([detail or '', now_str])
-        elif to_status == 'toClaim':
-            update_fields += ''',
-                last_result = CASE WHEN status = 'done' THEN 'revoked' ELSE last_result END,
-                last_result_detail = ?,
-                done_at = NULL
-            '''
-            params.append(detail or '')
-
-        params.append(row['id'])
-        db.execute(
-            f'''
-            UPDATE project_accounts
-            SET {update_fields}
-            WHERE id = ?
-            ''',
-            params,
-        )
-        add_project_event(
-            project['id'],
-            row['normalized_email'],
-            action,
-            account_id=account['id'],
-            project_account_id=row['id'],
-            from_status=from_status,
-            to_status=to_status,
-            caller_id=caller_id,
-            task_id=task_id,
-            detail=detail,
-            db=db,
-        )
-        db.commit()
-        return {
-            'project_key': normalized_key,
-            'project_account_id': row['id'],
-            'account_id': account['id'],
-            'email': row['normalized_email'],
-            'primary_email': account.get('email', ''),
-            'group_id': account.get('group_id'),
-            'project_status': to_status,
         }
     except Exception:
         db.rollback()

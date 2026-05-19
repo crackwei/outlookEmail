@@ -76,12 +76,12 @@
                 updateCurrentGroupHeader(currentGroup);
             }
 
-            const cloudflareGlobalLabel = 'cf-mail所有邮件';
+            const cloudflareGlobalLabel = 'Cloudflare所有邮件';
             const showCloudflareGlobalEntry = (filter === 'all' || filter === 'cloudflare') &&
                 (!searchQuery || cloudflareGlobalLabel.toLowerCase().includes(searchQuery));
 
             if (filtered.length === 0 && !showCloudflareGlobalEntry) {
-                const providerName = filter === 'duckmail' ? 'DuckMail' : (filter === 'cloudflare' ? 'cf-mail' : 'GPTMail');
+                const providerName = filter === 'duckmail' ? 'DuckMail' : (filter === 'cloudflare' ? 'Cloudflare' : 'GPTMail');
                 const hasAdvancedFilters = !!searchQuery || selectedTagFilters.size > 0;
                 const hint = hasAdvancedFilters
                     ? '未找到匹配的临时邮箱'
@@ -105,7 +105,7 @@
                             </div>
                         </div>
                         <div class="account-meta-row">
-                            <span class="account-status-pill provider" style="--pill-accent: #f48120">cf-mail</span>
+                            <span class="account-status-pill provider" style="--pill-accent: #f48120">Cloudflare</span>
                         </div>
                     </div>
                 </div>
@@ -129,7 +129,7 @@
                         <div class="account-meta-row">
                             <span class="account-status-pill provider"
                                 style="--pill-accent: ${email.provider === 'duckmail' ? '#ff9800' : (email.provider === 'cloudflare' ? '#f48120' : '#00bcf2')}">
-                                ${escapeHtml(email.provider === 'duckmail' ? 'DuckMail' : (email.provider === 'cloudflare' ? 'cf-mail' : 'GPTMail'))}
+                                ${escapeHtml(email.provider === 'duckmail' ? 'DuckMail' : (email.provider === 'cloudflare' ? 'Cloudflare' : 'GPTMail'))}
                             </span>
                             <span class="account-status-pill muted">临时邮箱</span>
                         </div>
@@ -187,7 +187,7 @@
                                     </label>
                                     <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 10px 16px; border: 2px solid #e5e5e5; border-radius: 8px; flex: 1; transition: all 0.2s;" id="providerLabelCloudflare">
                                         <input type="radio" name="tempEmailProvider" value="cloudflare" onchange="toggleTempEmailProvider('cloudflare')">
-                                        <span style="font-weight: 600;">cf-mail</span>
+                                        <span style="font-weight: 600;">Cloudflare</span>
                                     </label>
                                 </div>
                             </div>
@@ -475,7 +475,7 @@
             hasMoreEmails = true;
 
             document.getElementById('currentAccount').classList.add('show');
-            document.getElementById('currentAccountEmail').textContent = 'cf-mail所有邮件';
+            document.getElementById('currentAccountEmail').textContent = 'Cloudflare所有邮件';
             showEmailList();
             closeMobilePanels();
             updateMobileContext();
@@ -493,7 +493,7 @@
                 ${renderCloudflareGlobalFilterBar()}
                 <div class="empty-state">
                     <div class="empty-state-icon">📬</div>
-                    <div class="empty-state-text">点击"获取邮件"按钮获取 cf-mail 所有邮件</div>
+                    <div class="empty-state-text">点击"获取邮件"按钮获取 Cloudflare所有邮件</div>
                 </div>
             `;
             document.getElementById('emailDetail').innerHTML = `
@@ -505,7 +505,7 @@
             document.getElementById('emailDetailToolbar').style.display = 'none';
             document.getElementById('emailCount').textContent = '';
             const methodTag = document.getElementById('methodTag');
-            methodTag.textContent = 'cf-mail 全部';
+            methodTag.textContent = 'Cloudflare 全部';
             methodTag.style.display = 'inline';
             methodTag.style.backgroundColor = '#f48120';
             methodTag.style.color = 'white';
@@ -537,8 +537,8 @@
         function updateCloudflareGlobalMethodTag(data) {
             const methodTag = document.getElementById('methodTag');
             const fallbackLabel = data?.fallback_used && data?.queried_email
-                ? `cf-mail 全部 · ${data.queried_email}`
-                : 'cf-mail 全部';
+                ? `Cloudflare 全部 · ${data.queried_email}`
+                : 'Cloudflare 全部';
             methodTag.textContent = fallbackLabel;
             methodTag.style.display = 'inline';
             methodTag.style.backgroundColor = '#f48120';
@@ -590,7 +590,7 @@
                     scheduleEmailListLoadCheck(80);
                 } else {
                     hasMoreEmails = false;
-                    handleApiError(data, '加载 cf-mail 所有邮件失败');
+                    handleApiError(data, '加载 Cloudflare所有邮件失败');
                     container.innerHTML = `${renderCloudflareGlobalFilterBar()}${renderEmptyStateMarkup('⚠️', data.error || '加载失败', {
                         onAction: 'loadCloudflareGlobalMessages()',
                         actionTitle: '刷新邮件列表'
@@ -663,7 +663,7 @@
             } catch (error) {
                 const loadingEl = document.getElementById('loadingMore');
                 if (loadingEl) loadingEl.remove();
-                showToast('加载 cf-mail 所有邮件失败', 'error');
+                showToast('加载 Cloudflare所有邮件失败', 'error');
             } finally {
                 isLoadingMore = false;
                 if (refreshBtn) {
@@ -810,7 +810,7 @@
                         : (data.method === 'Cloudflare' ? 'cloudflare' : 'gptmail');
 
                     const methodTag = document.getElementById('methodTag');
-                    methodTag.textContent = data.source === 'cf-mail' ? 'cf-mail' : (data.method || 'GPTMail');
+                    methodTag.textContent = data.method || 'GPTMail';
                     methodTag.style.display = 'inline';
                     methodTag.style.backgroundColor = data.method === 'DuckMail'
                         ? '#ff9800'
