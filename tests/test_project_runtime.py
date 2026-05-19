@@ -46,6 +46,7 @@ class ProjectRuntimeTests(unittest.TestCase):
             db.execute('DELETE FROM accounts')
             db.execute("DELETE FROM groups WHERE name NOT IN ('默认分组', '临时邮箱')")
             db.commit()
+            self.assertTrue(web_outlook_app.set_setting('external_api_key', 'test-external-key'))
 
     def _create_group(self, name: str) -> int:
         with self.app.app_context():
@@ -106,6 +107,130 @@ class ProjectRuntimeTests(unittest.TestCase):
         payload = response.get_json()
         self.assertTrue(payload['success'])
         return payload['data']['accounts']
+
+    def _external_headers(self):
+        return {'X-API-Key': 'test-external-key'}
+
+    def test_generate_cf_provider_creates_cf_mailbox_without_jwt(self):
+        with patch.object(web_outlook_app, 'cf_mail_create_mailbox', return_value={
+            'success': True,
+            'address': 'case@example.com',
+            'address_id': '42',
+        }) as create_mock:
+            response = self.client.post('/api/temp-emails/generate', json={
+                'provider': 'cf',
+                'domain': 'example.com',
+                'username': 'case',
+            })
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['email'], 'case@example.com')
+        create_mock.assert_called_once_with(username='case', domain='example.com')
+
+        with self.app.app_context():
+            temp_email = web_outlook_app.get_temp_email_by_address('case@example.com')
+        self.assertIsNotNone(temp_email)
+        self.assertEqual(temp_email['provider'], 'cloudflare')
+        self.assertIsNone(temp_email['cloudflare_jwt'])
+        self.assertEqual(temp_email['cloudflare_address_id'], '42')
+
+    def test_cloudflare_temp_messages_read_from_cf_mail_without_jwt(self):
+        with self.app.app_context():
+            self.assertTrue(web_outlook_app.add_temp_email('cf-user@example.com', provider='cloudflare'))
+
+        cf_messages = [{
+            'id': 'cf-mail-100',
+            'from_address': 'sender@example.com',
+            'subject': 'cf-mail code',
+            'content': 'Your code is 135790',
+            'html_content': '',
+            'has_html': False,
+            'timestamp': 1770000000,
+        }]
+
+        with patch.object(web_outlook_app, 'cf_mail_get_messages', return_value=cf_messages) as cf_mail_mock, \
+                patch.object(web_outlook_app, 'cloudflare_get_messages', return_value=[]) as legacy_mock:
+            response = self.client.get('/api/temp-emails/cf-user@example.com/messages')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['method'], 'Cloudflare')
+        self.assertEqual(payload['source'], 'cf-mail')
+        self.assertEqual(payload['emails'][0]['subject'], 'cf-mail code')
+        cf_mail_mock.assert_called_once_with('cf-user@example.com', limit=50, offset=0)
+        legacy_mock.assert_not_called()
+
+        with self.app.app_context():
+            saved = web_outlook_app.get_temp_email_message_by_id('cf-mail-100')
+        self.assertIsNotNone(saved)
+        self.assertEqual(saved['content'], 'Your code is 135790')
+
+    def test_external_emails_cf_provider_auto_creates_and_returns_cf_mail(self):
+        cf_messages = [{
+            'id': 'cf-mail-200',
+            'from_address': 'sender@example.com',
+            'subject': 'external cf-mail code',
+            'content': 'External code is 246810',
+            'html_content': '',
+            'has_html': False,
+            'timestamp': 1770000100,
+        }]
+
+        with patch.object(web_outlook_app, 'cf_mail_create_mailbox', return_value={
+            'success': True,
+            'address': 'api-cf@example.com',
+            'address_id': '77',
+        }) as create_mock, \
+                patch.object(web_outlook_app, 'cf_mail_get_messages', return_value=cf_messages) as messages_mock:
+            response = self.client.get(
+                '/api/external/emails?email=api-cf@example.com&provider=cf',
+                headers=self._external_headers()
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['method'], 'Cloudflare')
+        self.assertEqual(payload['source'], 'cf-mail')
+        self.assertEqual(payload['provider'], 'cloudflare')
+        self.assertEqual(payload['emails'][0]['body'], 'External code is 246810')
+        create_mock.assert_called_once_with(address='api-cf@example.com')
+        messages_mock.assert_called_once_with('api-cf@example.com', limit=1, offset=0)
+
+        with self.app.app_context():
+            temp_email = web_outlook_app.get_temp_email_by_address('api-cf@example.com')
+        self.assertIsNotNone(temp_email)
+        self.assertEqual(temp_email['provider'], 'cloudflare')
+        self.assertEqual(temp_email['cloudflare_address_id'], '77')
+
+    def test_external_temp_email_generate_creates_cf_mailbox(self):
+        with patch.object(web_outlook_app, 'cf_mail_create_mailbox', return_value={
+            'success': True,
+            'address': 'external-new@example.com',
+            'address_id': '88',
+        }) as create_mock:
+            response = self.client.post(
+                '/api/external/temp-emails/generate',
+                json={'provider': 'cf', 'email': 'external-new@example.com'},
+                headers=self._external_headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['email'], 'external-new@example.com')
+        self.assertEqual(payload['source'], 'cf-mail')
+        self.assertFalse(payload['existed'])
+        create_mock.assert_called_once_with(address='external-new@example.com', username=None, domain=None)
+
+        with self.app.app_context():
+            temp_email = web_outlook_app.get_temp_email_by_address('external-new@example.com')
+        self.assertIsNotNone(temp_email)
+        self.assertEqual(temp_email['provider'], 'cloudflare')
+        self.assertEqual(temp_email['cloudflare_address_id'], '88')
 
     def test_accounts_api_imports_and_pages_ten_thousand_accounts(self):
         account_lines = [
@@ -503,6 +628,176 @@ class ProjectRuntimeTests(unittest.TestCase):
 
         accounts = self._project_accounts('gpt')
         self.assertEqual({item['email'] for item in accounts}, {'alias-a@example.com', 'alias-b@example.com'})
+
+    def test_external_project_mark_used_by_email_excludes_from_group_claim(self):
+        group_id = self._create_group('outlook')
+        self._insert_account('used@example.com', group_id=group_id)
+        self._insert_account('free@example.com', group_id=group_id)
+
+        mark_response = self.client.post(
+            '/api/external/projects/chatgpt/mark-used',
+            headers=self._external_headers(),
+            json={'email': 'used@example.com', 'detail': 'registered'}
+        )
+        self.assertEqual(mark_response.status_code, 200)
+        mark_payload = mark_response.get_json()
+        self.assertTrue(mark_payload['success'])
+        self.assertEqual(mark_payload['account']['project_status'], 'done')
+
+        claim_response = self.client.post(
+            '/api/external/projects/chatgpt/claim',
+            headers=self._external_headers(),
+            json={'group_name': 'outlook', 'count': 2, 'caller_id': 'worker-1'}
+        )
+        self.assertEqual(claim_response.status_code, 200)
+        claim_payload = claim_response.get_json()
+        self.assertTrue(claim_payload['success'])
+        self.assertEqual(claim_payload['count'], 1)
+        self.assertEqual(claim_payload['accounts'][0]['email'], 'free@example.com')
+
+    def test_external_project_done_status_is_scoped_to_project(self):
+        group_id = self._create_group('outlook')
+        account_id = self._insert_account('shared@example.com', group_id=group_id)
+
+        chatgpt_mark = self.client.post(
+            '/api/external/projects/chatgpt/mark-used',
+            headers=self._external_headers(),
+            json={'email': 'shared@example.com', 'detail': 'chatgpt registered'}
+        ).get_json()
+        self.assertTrue(chatgpt_mark['success'])
+        self.assertEqual(chatgpt_mark['account']['project_status'], 'done')
+
+        chatgpt_claim = self.client.post(
+            '/api/external/projects/chatgpt/claim',
+            headers=self._external_headers(),
+            json={'group_id': group_id}
+        ).get_json()
+        self.assertFalse(chatgpt_claim['success'])
+        self.assertEqual(chatgpt_claim['count'], 0)
+
+        google_claim = self.client.post(
+            '/api/external/projects/google/claim',
+            headers=self._external_headers(),
+            json={'group_id': group_id, 'caller_id': 'worker-google'}
+        ).get_json()
+        self.assertTrue(google_claim['success'])
+        self.assertEqual(google_claim['count'], 1)
+        self.assertEqual(google_claim['accounts'][0]['account_id'], account_id)
+        self.assertEqual(google_claim['accounts'][0]['project_status'], 'claiming')
+
+        chatgpt_accounts = self._project_accounts('chatgpt')
+        google_accounts = self._project_accounts('google')
+        self.assertEqual(chatgpt_accounts[0]['project_status'], 'done')
+        self.assertEqual(google_accounts[0]['project_status'], 'claiming')
+
+    def test_external_project_claim_temporarily_locks_accounts(self):
+        group_id = self._create_group('outlook')
+        first_id = self._insert_account('first@example.com', group_id=group_id)
+        second_id = self._insert_account('second@example.com', group_id=group_id)
+
+        first_claim = self.client.post(
+            '/api/external/projects/chatgpt/claim',
+            headers=self._external_headers(),
+            json={'group_id': group_id, 'count': 1, 'caller_id': 'worker-1', 'task_id': 'task-1'}
+        ).get_json()
+        self.assertTrue(first_claim['success'])
+        self.assertEqual(first_claim['accounts'][0]['account_id'], first_id)
+        self.assertEqual(first_claim['accounts'][0]['project_status'], 'claiming')
+        self.assertTrue(first_claim['accounts'][0]['claim_token'])
+
+        second_claim = self.client.post(
+            '/api/external/projects/chatgpt/claim',
+            headers=self._external_headers(),
+            json={'group_id': group_id, 'count': 2, 'caller_id': 'worker-2', 'task_id': 'task-2'}
+        ).get_json()
+        self.assertTrue(second_claim['success'])
+        self.assertEqual(second_claim['count'], 1)
+        self.assertEqual(second_claim['accounts'][0]['account_id'], second_id)
+
+        release = self.client.post(
+            '/api/external/projects/chatgpt/release',
+            headers=self._external_headers(),
+            json={
+                'account_id': first_id,
+                'claim_token': first_claim['accounts'][0]['claim_token'],
+                'caller_id': 'worker-1',
+                'task_id': 'task-1',
+            }
+        ).get_json()
+        self.assertTrue(release['success'])
+
+        mark_second = self.client.post(
+            '/api/external/projects/chatgpt/mark-used',
+            headers=self._external_headers(),
+            json={
+                'account_id': second_id,
+                'claim_token': second_claim['accounts'][0]['claim_token'],
+                'caller_id': 'worker-2',
+                'task_id': 'task-2',
+            }
+        ).get_json()
+        self.assertTrue(mark_second['success'])
+
+        third_claim = self.client.post(
+            '/api/external/projects/chatgpt/claim',
+            headers=self._external_headers(),
+            json={'group_id': group_id, 'count': 2, 'caller_id': 'worker-3', 'task_id': 'task-3'}
+        ).get_json()
+        self.assertTrue(third_claim['success'])
+        self.assertEqual(third_claim['count'], 1)
+        self.assertEqual(third_claim['accounts'][0]['account_id'], first_id)
+
+    def test_external_project_mark_on_get_can_be_revoked(self):
+        group_id = self._create_group('outlook')
+        account_id = self._insert_account('rollback@example.com', group_id=group_id)
+
+        marked_claim = self.client.post(
+            '/api/external/projects/chatgpt/claim',
+            headers=self._external_headers(),
+            json={'group_name': 'outlook', 'mark_on_get': True}
+        ).get_json()
+        self.assertTrue(marked_claim['success'])
+        self.assertEqual(marked_claim['accounts'][0]['account_id'], account_id)
+        self.assertEqual(marked_claim['accounts'][0]['project_status'], 'done')
+        self.assertEqual(marked_claim['accounts'][0]['claim_token'], '')
+
+        empty_claim = self.client.post(
+            '/api/external/projects/chatgpt/claim',
+            headers=self._external_headers(),
+            json={'group_name': 'outlook'}
+        ).get_json()
+        self.assertFalse(empty_claim['success'])
+        self.assertEqual(empty_claim['count'], 0)
+
+        unmark = self.client.post(
+            '/api/external/projects/chatgpt/unmark',
+            headers=self._external_headers(),
+            json={'email': 'rollback@example.com', 'detail': 'registration failed'}
+        ).get_json()
+        self.assertTrue(unmark['success'])
+        self.assertEqual(unmark['account']['project_status'], 'toClaim')
+
+        next_claim = self.client.post(
+            '/api/external/projects/chatgpt/claim',
+            headers=self._external_headers(),
+            json={'group_name': 'outlook'}
+        ).get_json()
+        self.assertTrue(next_claim['success'])
+        self.assertEqual(next_claim['accounts'][0]['account_id'], account_id)
+
+    def test_external_project_claim_requires_api_key(self):
+        group_id = self._create_group('outlook')
+        self._insert_account('locked@example.com', group_id=group_id)
+
+        response = self.client.post(
+            '/api/external/projects/chatgpt/claim',
+            json={'group_id': group_id}
+        )
+
+        self.assertEqual(response.status_code, 401)
+        payload = response.get_json()
+        self.assertFalse(payload['success'])
+        self.assertIn('API Key', payload['error'])
 
     def test_init_db_preserves_existing_custom_group_order(self):
         group_a = self._create_group('Alpha Group')

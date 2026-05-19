@@ -644,7 +644,7 @@ def api_external_get_accounts():
         safe_accounts.append(
             serialize_account_summary(
                 acc,
-                {},
+                None,
                 include_client_meta=False,
                 include_imap_meta=False
             )
@@ -654,6 +654,253 @@ def api_external_get_accounts():
         'success': True,
         'total': len(safe_accounts),
         'accounts': safe_accounts
+    })
+
+
+def get_external_project_payload() -> Dict[str, Any]:
+    data = request.get_json(silent=True)
+    if isinstance(data, dict):
+        return data
+    if request.form:
+        return request.form.to_dict()
+    return {}
+
+
+def resolve_external_project_group(data: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], Optional[Any]]:
+    raw_group_id = data.get('group_id', request.args.get('group_id'))
+    raw_group_name = (
+        data.get('group_name')
+        or data.get('group')
+        or request.args.get('group_name')
+        or request.args.get('group')
+        or ''
+    )
+
+    if raw_group_id not in (None, ''):
+        try:
+            group_id = int(raw_group_id)
+        except (TypeError, ValueError):
+            return None, (jsonify({'success': False, 'error': 'group_id 无效'}), 400)
+        group = get_group_by_id(group_id)
+        if not group:
+            return None, (jsonify({'success': False, 'error': '分组不存在'}), 404)
+        if group.get('is_system'):
+            return None, (jsonify({'success': False, 'error': '系统分组不能用于项目邮箱领取'}), 400)
+        return group, None
+
+    group_name = str(raw_group_name or '').strip()
+    if group_name:
+        if group_name.isdigit():
+            group = get_group_by_id(int(group_name))
+        else:
+            group = get_group_by_name(group_name)
+        if not group:
+            return None, (jsonify({'success': False, 'error': '分组不存在'}), 404)
+        if group.get('is_system'):
+            return None, (jsonify({'success': False, 'error': '系统分组不能用于项目邮箱领取'}), 400)
+        return group, None
+
+    return None, (jsonify({'success': False, 'error': '缺少 group_id 或 group_name'}), 400)
+
+
+def resolve_external_project_account_target(data: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], str, Optional[Any]]:
+    raw_account_id = data.get('account_id')
+    email_addr = str(data.get('email') or data.get('email_addr') or '').strip()
+
+    if raw_account_id not in (None, ''):
+        try:
+            account_id = int(raw_account_id)
+        except (TypeError, ValueError):
+            return None, email_addr, (jsonify({'success': False, 'error': 'account_id 无效'}), 400)
+        account = get_account_by_id(account_id)
+        if not account:
+            return None, email_addr, (jsonify({'success': False, 'error': '邮箱账号不存在'}), 404)
+        return account, email_addr or account.get('email', ''), None
+
+    if not email_addr:
+        return None, email_addr, (jsonify({'success': False, 'error': '缺少 email 或 account_id'}), 400)
+
+    account = resolve_account_for_email_api(email_addr)
+    if not account:
+        return None, email_addr, (jsonify({'success': False, 'error': '邮箱账号不存在'}), 404)
+    return account, email_addr, None
+
+
+@app.route('/api/external/projects/<project_key>/claim', methods=['POST'])
+@app.route('/api/external/projects/<project_key>/accounts/claim', methods=['POST'])
+@csrf_exempt
+@api_key_required
+def api_external_claim_project_accounts(project_key):
+    """对外 API：从指定分组领取未被该项目使用的邮箱，并默认临时锁定。"""
+    data = get_external_project_payload()
+    group, error_response = resolve_external_project_group(data)
+    if error_response:
+        return error_response
+
+    mark_used = parse_bool_flag(data.get('mark_used', data.get('mark_on_get')), False)
+    use_alias_email_provided = 'use_alias_email' in data
+    try:
+        accounts = claim_project_accounts(
+            project_key,
+            group_id=int(group['id']),
+            count=data.get('count', data.get('limit', 1)),
+            caller_id=data.get('caller_id', ''),
+            task_id=data.get('task_id', ''),
+            lease_seconds=data.get('lease_seconds', 600),
+            mark_used=mark_used,
+            use_alias_email=data.get('use_alias_email'),
+            use_alias_email_provided=use_alias_email_provided,
+        )
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+    except Exception as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 500
+
+    if not accounts:
+        return jsonify({
+            'success': False,
+            'error': '没有可领取的项目邮箱',
+            'project_key': normalize_project_key(project_key),
+            'group_id': group['id'],
+            'group_name': group['name'],
+            'accounts': [],
+            'count': 0,
+        })
+
+    return jsonify({
+        'success': True,
+        'project_key': normalize_project_key(project_key),
+        'group_id': group['id'],
+        'group_name': group['name'],
+        'mark_used': mark_used,
+        'count': len(accounts),
+        'accounts': accounts,
+    })
+
+
+@app.route('/api/external/projects/<project_key>/mark-used', methods=['POST'])
+@csrf_exempt
+@api_key_required
+def api_external_mark_project_account_used(project_key):
+    """对外 API：把邮箱标记为已被项目使用。"""
+    data = get_external_project_payload()
+    account, requested_email, error_response = resolve_external_project_account_target(data)
+    if error_response:
+        return error_response
+
+    claim_token = str(data.get('claim_token') or '').strip()
+    caller_id = str(data.get('caller_id') or '').strip()
+    task_id = str(data.get('task_id') or '').strip()
+    detail = sanitize_input(data.get('detail', ''), max_length=500)
+
+    if claim_token:
+        if complete_project_account_success(project_key, int(account['id']), claim_token, caller_id, task_id, detail):
+            return jsonify({
+                'success': True,
+                'message': '项目邮箱已标记为已使用',
+                'project_key': normalize_project_key(project_key),
+                'account_id': account['id'],
+                'email': account.get('email', ''),
+                'project_status': 'done',
+            })
+        return jsonify({'success': False, 'error': '项目账号状态不匹配或 claim_token 无效'}), 400
+
+    result = set_project_account_direct_status(
+        project_key,
+        account,
+        'done',
+        'mark_used',
+        detail=detail,
+        requested_email=requested_email,
+        caller_id=caller_id,
+        task_id=task_id,
+    )
+    if not result:
+        return jsonify({'success': False, 'error': '项目邮箱标记失败'}), 400
+
+    return jsonify({
+        'success': True,
+        'message': '项目邮箱已标记为已使用',
+        'account': result,
+    })
+
+
+@app.route('/api/external/projects/<project_key>/unmark', methods=['POST'])
+@app.route('/api/external/projects/<project_key>/unmark-used', methods=['POST'])
+@csrf_exempt
+@api_key_required
+def api_external_unmark_project_account(project_key):
+    """对外 API：撤回项目使用标记，让邮箱重新变为可领取。"""
+    data = get_external_project_payload()
+    account, requested_email, error_response = resolve_external_project_account_target(data)
+    if error_response:
+        return error_response
+
+    result = set_project_account_direct_status(
+        project_key,
+        account,
+        'toClaim',
+        'unmark_used',
+        detail=sanitize_input(data.get('detail', ''), max_length=500),
+        requested_email=requested_email,
+        caller_id=str(data.get('caller_id') or '').strip(),
+        task_id=str(data.get('task_id') or '').strip(),
+        allowed_from_statuses={'toClaim', 'claiming', 'done', 'failed', 'removed'},
+    )
+    if not result:
+        return jsonify({'success': False, 'error': '项目邮箱撤回失败'}), 400
+
+    return jsonify({
+        'success': True,
+        'message': '项目邮箱标记已撤回',
+        'account': result,
+    })
+
+
+@app.route('/api/external/projects/<project_key>/release', methods=['POST'])
+@csrf_exempt
+@api_key_required
+def api_external_release_project_account(project_key):
+    """对外 API：释放领取中的临时锁。"""
+    data = get_external_project_payload()
+    account, requested_email, error_response = resolve_external_project_account_target(data)
+    if error_response:
+        return error_response
+
+    claim_token = str(data.get('claim_token') or '').strip()
+    caller_id = str(data.get('caller_id') or '').strip()
+    task_id = str(data.get('task_id') or '').strip()
+    detail = sanitize_input(data.get('detail', ''), max_length=500)
+    if claim_token:
+        if release_project_account(project_key, int(account['id']), claim_token, caller_id, task_id, detail):
+            return jsonify({
+                'success': True,
+                'message': '项目邮箱临时锁已释放',
+                'project_key': normalize_project_key(project_key),
+                'account_id': account['id'],
+                'email': account.get('email', ''),
+                'project_status': 'toClaim',
+            })
+        return jsonify({'success': False, 'error': '项目账号状态不匹配或 claim_token 无效'}), 400
+
+    result = set_project_account_direct_status(
+        project_key,
+        account,
+        'toClaim',
+        'release',
+        detail=detail,
+        requested_email=requested_email,
+        caller_id=caller_id,
+        task_id=task_id,
+        allowed_from_statuses={'claiming'},
+    )
+    if not result:
+        return jsonify({'success': False, 'error': '没有可释放的项目邮箱临时锁'}), 400
+
+    return jsonify({
+        'success': True,
+        'message': '项目邮箱临时锁已释放',
+        'account': result,
     })
 
 

@@ -34,6 +34,11 @@
 | --- | --- | --- | --- | --- |
 | GET | `/api/external/accounts` | API Key | JSON | 获取普通邮箱账号列表 |
 | GET | `/api/external/emails` | API Key | JSON | 获取指定邮箱邮件列表 |
+| POST | `/api/external/temp-emails/generate` | API Key | JSON | 创建 cf-mail 临时邮箱 |
+| POST | `/api/external/projects/<project_key>/claim` | API Key | JSON | 从分组领取未被项目使用的邮箱，默认临时锁定 |
+| POST | `/api/external/projects/<project_key>/mark-used` | API Key | JSON | 标记邮箱已被项目使用 |
+| POST | `/api/external/projects/<project_key>/unmark` | API Key | JSON | 撤回项目使用标记 |
+| POST | `/api/external/projects/<project_key>/release` | API Key | JSON | 释放领取中的临时锁 |
 
 ### 分组、账号、标签、项目
 
@@ -353,6 +358,7 @@ curl -H "X-API-Key: your-api-key" \
 | `subject_contains` | string | 否 | 仅保留主题中包含该关键字的邮件 |
 | `from_contains` | string | 否 | 仅保留发件人中包含该关键字的邮件 |
 | `keyword` | string | 否 | 在主题、预览、正文中做进一步关键字过滤 |
+| `provider` / `type` | string | 否 | 传 `cf`、`cf-mail` 或 `cloudflare` 时按 cf-mail 临时邮箱处理；邮箱不存在会先通过 cf-mail 外部 API 自动创建 |
 
 #### 请求示例
 
@@ -368,6 +374,9 @@ curl -H "X-API-Key: your-api-key" \
 
 curl -H "X-API-Key: your-api-key" \
   "http://localhost:5000/api/external/emails?email=user%2Balias%40example.com"
+
+curl -H "X-API-Key: your-api-key" \
+  "http://localhost:5000/api/external/emails?email=demo@example.com&provider=cf"
 ```
 
 #### 成功响应示例
@@ -423,6 +432,136 @@ curl -H "X-API-Key: your-api-key" \
 4. `user@googlemail.com`
 
 如果使用回退候选命中，响应会包含 `resolved_query_email`、`fallback_used`、`fallback_email` 等字段。
+
+### POST `/api/external/temp-emails/generate`
+
+通过对外 API 创建 cf-mail 临时邮箱，并登记到本地“临时邮箱”管理列表。也可使用等价路径 `POST /api/external/temp-emails`。
+
+#### 请求体
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `provider` / `type` | string | 否 | 传 `cf`、`cf-mail` 或 `cloudflare`；默认 `cf` |
+| `email` / `address` | string | 否 | 指定完整邮箱地址；传入时会幂等创建 |
+| `domain` | string | 否 | 未指定完整邮箱时使用的域名 |
+| `username` | string | 否 | 未指定完整邮箱时使用的本地部分，留空则 cf-mail 随机生成 |
+
+#### 请求示例
+
+```bash
+curl -X POST -H "X-API-Key: your-api-key" -H "Content-Type: application/json" \
+  -d '{"provider":"cf","email":"demo@example.com"}' \
+  "http://localhost:5000/api/external/temp-emails/generate"
+```
+
+#### 成功响应示例
+
+```json
+{
+  "success": true,
+  "email": "demo@example.com",
+  "provider": "cloudflare",
+  "source": "cf-mail",
+  "existed": false,
+  "message": "cf-mail 临时邮箱创建成功"
+}
+```
+
+### 对外项目邮箱池 API
+
+这些接口用于让外部注册脚本维护“某个邮箱是否已经被某个项目使用”。例如把邮箱标记为已用于 `chatgpt`，后续再从 `outlook` 分组领取 `chatgpt` 未使用过的邮箱时，该邮箱不会再次返回。
+
+项目状态是按 `project_key` 独立保存的，不会写入邮箱主表。也就是说同一个邮箱可以在 `chatgpt` 项目中是 `done`，同时在 `google`、`claude` 等其他项目中仍然可以继续领取和使用。
+
+典型流程：
+
+1. `POST /api/external/projects/chatgpt/claim` 从分组领取邮箱，默认写入临时锁 `claiming`
+2. 注册成功后调用 `POST /api/external/projects/chatgpt/mark-used`，邮箱状态变成 `done`
+3. 注册中断或放弃时调用 `POST /api/external/projects/chatgpt/release`，释放临时锁
+4. 如果领取时用了 `mark_on_get=true` 直接打标，项目失败后调用 `POST /api/external/projects/chatgpt/unmark` 撤回
+
+#### POST `/api/external/projects/<project_key>/claim`
+
+从指定分组领取一个或多个未被该项目使用的邮箱。该接口会修改状态，所以使用 `POST`。
+
+请求体字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `group_id` | int | 条件必填 | 分组 ID，和 `group_name` 二选一 |
+| `group_name` / `group` | string | 条件必填 | 分组名称，例如 `outlook` |
+| `count` / `limit` | int | 否 | 领取数量，默认 `1`，最大 `100` |
+| `lease_seconds` | int | 否 | 临时锁秒数，默认 `600`，最大 `3600` |
+| `caller_id` | string | 否 | 调用方标识 |
+| `task_id` | string | 否 | 当前任务标识 |
+| `mark_on_get` / `mark_used` | bool | 否 | 是否领取时直接标记为已使用，默认 `false` |
+
+请求示例：
+
+```bash
+curl -X POST -H "X-API-Key: your-api-key" -H "Content-Type: application/json" \
+  -d '{"group_name":"outlook","count":1,"caller_id":"worker-1","task_id":"task-001"}' \
+  "http://localhost:5000/api/external/projects/chatgpt/claim"
+```
+
+成功响应示例：
+
+```json
+{
+  "success": true,
+  "project_key": "chatgpt",
+  "group_name": "outlook",
+  "count": 1,
+  "accounts": [
+    {
+      "account_id": 12,
+      "email": "user@outlook.com",
+      "project_status": "claiming",
+      "claim_token": "pclm_xxx",
+      "lease_expires_at": "2026-05-19T10:10:00+00:00"
+    }
+  ]
+}
+```
+
+#### POST `/api/external/projects/<project_key>/mark-used`
+
+把邮箱标记为已被项目使用。支持两种模式：
+
+- 领取后完成：传 `account_id` 和 `claim_token`
+- 事后直接打标：传 `email` 或 `account_id`
+
+请求示例：
+
+```json
+{
+  "email": "user@outlook.com",
+  "detail": "chatgpt registered"
+}
+```
+
+#### POST `/api/external/projects/<project_key>/unmark`
+
+撤回项目使用标记，把邮箱状态改回 `toClaim`。适用于 `mark_on_get=true` 后项目失败的场景。
+
+```json
+{
+  "email": "user@outlook.com",
+  "detail": "registration failed"
+}
+```
+
+#### POST `/api/external/projects/<project_key>/release`
+
+释放领取中的临时锁。推荐传领取时返回的 `claim_token`。
+
+```json
+{
+  "account_id": 12,
+  "claim_token": "pclm_xxx",
+  "detail": "task cancelled"
+}
+```
 
 ## 内部 API
 
@@ -1437,14 +1576,14 @@ ZIP 内文件名使用附件原始文件名；如果多个附件同名，会自�
 | POST | `/api/temp-emails/import` | JSON: `account_string`、`provider` | 批量导入临时邮箱 |
 | POST | `/api/temp-emails/batch-delete` | JSON: `temp_email_ids` | 批量删除临时邮箱 |
 | GET | `/api/duckmail/domains` | 无 | 获取 DuckMail 可用域名 |
-| GET | `/api/cloudflare/domains` | 无 | 获取 Cloudflare 可用域名 |
-| GET | `/api/cloudflare/messages` | Query: `limit?`、`offset?`、`address?` | 使用 Cloudflare 管理员接口查看当前 Worker 全部邮件，可选按收件地址过滤 |
+| GET | `/api/cloudflare/domains` | 无 | 获取 cf-mail 可用域名配置 |
+| GET | `/api/cloudflare/messages` | Query: `limit?`、`offset?`、`address?` | 使用 cf-mail 外部接口查看当前 Worker 全部邮件，可选按收件地址过滤 |
 
 `/api/temp-emails/import` 的导入格式：
 
 - `provider=gptmail`: 每行一个邮箱
 - `provider=duckmail`: 每行 `邮箱----密码`
-- `provider=cloudflare`: 每行 `邮箱----JWT`
+- `provider=cloudflare` / `cf` / `cf-mail`: 每行一个邮箱；兼容旧格式 `邮箱----JWT`
 
 ### POST `/api/temp-emails/generate`
 
@@ -1456,7 +1595,7 @@ ZIP 内文件名使用附件原始文件名；如果多个附件同名，会自�
 | --- | --- | --- |
 | `gptmail` | `prefix?`、`domain?` | 不传则走默认随机生成 |
 | `duckmail` | `domain`、`username`、`password` | 用户名至少 3 位，密码至少 6 位 |
-| `cloudflare` | `domain?`、`username?` | `username` 可留空随机生成 |
+| `cloudflare` / `cf` / `cf-mail` | `domain?`、`username?` | 通过 cf-mail 外部 API 创建，`username` 可留空随机生成 |
 
 #### 请求示例
 
@@ -1484,7 +1623,7 @@ ZIP 内文件名使用附件原始文件名；如果多个附件同名，会自�
 
 ### GET `/api/cloudflare/messages`
 
-查看当前配置的 Cloudflare Temp Email Worker 全部邮件。该接口需要 Web 登录 session，不使用对外 API Key；它不同于普通邮箱的 `folder=all`，后者只聚合某个普通邮箱账号的收件箱和垃圾邮件。
+查看当前配置的 cf-mail Worker 全部邮件。该接口需要 Web 登录 session，不使用对外 API Key；它不同于普通邮箱的 `folder=all`，后者只聚合某个普通邮箱账号的收件箱和垃圾邮件。旧的 Cloudflare Temp Email JWT 邮箱仍保留读取兼容。
 
 #### 查询参数
 
@@ -1570,9 +1709,9 @@ ZIP 内文件名使用附件原始文件名；如果多个附件同名，会自�
 | `external_api_key` | 当前对外 API Key |
 | `duckmail_base_url` | DuckMail API 地址 |
 | `duckmail_api_key` | DuckMail API Key |
-| `cloudflare_worker_domain` | Cloudflare Worker 域名 |
-| `cloudflare_email_domains` | Cloudflare 邮箱域名列表，逗号分隔字符串 |
-| `cloudflare_admin_password` | Cloudflare 管理密码 |
+| `cloudflare_worker_domain` | cf-mail Worker 域名或 URL |
+| `cloudflare_email_domains` | cf-mail 邮箱域名列表，逗号分隔字符串 |
+| `cloudflare_admin_password` | cf-mail 外部 API Key |
 | `app_timezone` | 当前系统时区，IANA 时区名，例如 `Asia/Shanghai` |
 | `show_account_created_at` | 是否在邮箱列表展示创建时间 |
 | `show_account_sort_order` | 是否在邮箱列表展示自定义排序值 |
@@ -1618,9 +1757,9 @@ ZIP 内文件名使用附件原始文件名；如果多个附件同名，会自�
 | --- | --- | --- |
 | `duckmail_base_url` | string | DuckMail API 地址 |
 | `duckmail_api_key` | string | DuckMail API Key |
-| `cloudflare_worker_domain` | string | Cloudflare Worker 域名 |
-| `cloudflare_email_domains` | string | Cloudflare 邮箱域名，逗号分隔 |
-| `cloudflare_admin_password` | string | Cloudflare 管理密码 |
+| `cloudflare_worker_domain` | string | cf-mail Worker 域名或 URL |
+| `cloudflare_email_domains` | string | cf-mail 邮箱域名，逗号分隔 |
+| `cloudflare_admin_password` | string | cf-mail 外部 API Key |
 
 #### 转发与 SMTP / Telegram 相关字段
 

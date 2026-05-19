@@ -1382,6 +1382,24 @@ def api_get_emails_v2(email_addr):
     return jsonify(result)
 
 
+def temp_external_email_matches_filters(item: Dict[str, Any],
+                                        subject_contains: str = '',
+                                        from_contains: str = '',
+                                        keyword: str = '') -> bool:
+    subject = str(item.get('subject', '') or '').lower()
+    sender = str(item.get('from', '') or '').lower()
+    preview = str(item.get('body_preview', '') or '').lower()
+    body = strip_html_content(str(item.get('body', '') or '')).lower()
+
+    if subject_contains and subject_contains not in subject:
+        return False
+    if from_contains and from_contains not in sender:
+        return False
+    if keyword and keyword not in '\n'.join([subject, sender, preview, body]):
+        return False
+    return True
+
+
 def api_external_get_emails_v2():
     email_addr = get_query_arg_preserve_plus('email', '').strip()
     folder = normalize_folder_name(request.args.get('folder', 'inbox'))
@@ -1400,6 +1418,55 @@ def api_external_get_emails_v2():
 
     if top > 50:
         top = 50
+
+    requested_temp_provider = (
+        request.args.get('provider', '')
+        or request.args.get('type', '')
+        or request.args.get('mail_type', '')
+    )
+    temp_email_addr = normalize_email_address(email_addr) or email_addr.strip().lower()
+    temp_email = get_temp_email_by_address(temp_email_addr)
+
+    if temp_email or is_cloudflare_temp_provider(requested_temp_provider):
+        if not temp_email and is_cloudflare_temp_provider(requested_temp_provider):
+            if '@' not in temp_email_addr:
+                return jsonify({'success': False, 'error': 'email 参数无效'}), 400
+
+            create_result = cf_mail_create_mailbox(address=temp_email_addr)
+            if not create_result or not create_result.get('success'):
+                error_msg = create_result.get('error', '创建 cf-mail 临时邮箱失败') if create_result else '创建 cf-mail 临时邮箱失败'
+                return jsonify({'success': False, 'error': error_msg}), 502
+
+            add_temp_email(
+                temp_email_addr,
+                provider='cloudflare',
+                cloudflare_address_id=create_result.get('address_id') or create_result.get('id')
+            )
+            temp_email = get_temp_email_by_address(temp_email_addr)
+
+        if temp_email and normalize_temp_email_provider(temp_email.get('provider', 'gptmail')) == 'cloudflare':
+            messages, error, source = load_cloudflare_temp_messages(temp_email_addr, limit=top, offset=skip)
+            if messages is None:
+                return jsonify({'success': False, 'error': error or '获取 cf-mail 邮件失败'}), 502
+
+            save_temp_email_messages(temp_email_addr, messages)
+            formatted = format_temp_email_messages_for_external(temp_email_addr, messages, folder)
+            if subject_contains or from_contains or keyword:
+                formatted = [
+                    item for item in formatted
+                    if temp_external_email_matches_filters(item, subject_contains, from_contains, keyword)
+                ]
+
+            return jsonify({
+                'success': True,
+                'emails': formatted,
+                'method': 'Cloudflare',
+                'source': source,
+                'provider': 'cloudflare',
+                'requested_email': email_addr,
+                'resolved_email': temp_email_addr,
+                'has_more': len(formatted) >= top,
+            })
 
     account = resolve_account_for_email_api(email_addr)
     if not account:

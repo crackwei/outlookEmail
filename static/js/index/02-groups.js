@@ -1524,11 +1524,11 @@
                     return;
                 }
                 if (channel === 'cloudflare') {
-                    hintEl.textContent = '格式：邮箱----JWT，每行一个。';
-                    inputEl.placeholder = '邮箱----JWT';
+                    hintEl.textContent = '格式：每行一个邮箱；兼容旧格式：邮箱----JWT。';
+                    inputEl.placeholder = '邮箱';
                     if (exampleEl) {
                         exampleEl.style.display = '';
-                        exampleEl.textContent = '示例：\nuser@example.com----eyJhbGciOi...';
+                        exampleEl.textContent = '示例：\nuser@example.com\nuser2@example.com';
                     }
                     return;
                 }

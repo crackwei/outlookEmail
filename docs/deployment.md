@@ -131,9 +131,9 @@ docker-compose down
 | `GPTMAIL_API_KEY` | GPTMail API Key | `gpt-test` |
 | `DUCKMAIL_BASE_URL` | DuckMail API 地址 | `https://api.duckmail.sbs` |
 | `DUCKMAIL_API_KEY` | DuckMail API Key | 空 |
-| `CLOUDFLARE_WORKER_DOMAIN` | Cloudflare Temp Email Worker 域名，也兼容读取 `WORKER_DOMAIN` | 空 |
-| `CLOUDFLARE_EMAIL_DOMAINS` | Cloudflare 临时邮箱域名列表，逗号分隔，也兼容读取 `EMAIL_DOMAIN` | 空 |
-| `CLOUDFLARE_ADMIN_PASSWORD` | Cloudflare 管理密码，也兼容读取 `ADMIN_PASSWORD` | 空 |
+| `CLOUDFLARE_WORKER_DOMAIN` | cf-mail Worker 域名或 URL，也兼容读取 `WORKER_DOMAIN` | 空 |
+| `CLOUDFLARE_EMAIL_DOMAINS` | cf-mail 临时邮箱域名列表，逗号分隔，也兼容读取 `EMAIL_DOMAIN` | 空 |
+| `CLOUDFLARE_ADMIN_PASSWORD` | cf-mail 外部 API Key，也兼容读取 `ADMIN_PASSWORD` | 空 |
 | `OAUTH_CLIENT_ID` | OAuth 客户端 ID | `建议使用自己的，如果实在搞不到不填的话会使用默认的` |
 | `OAUTH_REDIRECT_URI` | OAuth 重定向 URI | `建议使用自己的，如果实在搞不到不填的话会使用默认的` |
 
