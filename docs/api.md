@@ -33,6 +33,7 @@
 | 方法 | 路径 | 鉴权 | 返回类型 | 说明 |
 | --- | --- | --- | --- | --- |
 | GET | `/api/external/accounts` | API Key | JSON | 获取普通邮箱账号列表 |
+| POST | `/api/external/accounts/import` | API Key | JSON | 导入普通邮箱账号 |
 | GET | `/api/external/emails` | API Key | JSON | 获取指定邮箱邮件列表 |
 
 ### 分组、账号、标签、项目
@@ -337,6 +338,81 @@ curl -H "X-API-Key: your-api-key" \
 - 该接口只返回普通邮箱账号，不包含临时邮箱列表
 - 已隐藏密码、Refresh Token、IMAP 密码等敏感字段
 - 如需拉取某个邮箱的邮件列表，再调用 `/api/external/emails`
+
+### POST `/api/external/accounts/import`
+
+通过 API Key 导入普通邮箱账号，不需要登录 Web 界面。`POST /api/external/accounts` 是同等别名，便于外部自动化脚本直接写入邮箱池。
+
+#### JSON 参数
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `group_id` | int | 否 | 目标分组 ID；不传且未传 `group_name` 时默认导入 `1` |
+| `group_name` / `group` | string | 否 | 目标分组名称，也可传数字字符串 |
+| `account_string` / `accounts_text` | string | 否 | 多行导入文本，格式同 Web 导入 |
+| `accounts` | array/object | 否 | 结构化账号列表，也可传单个对象 |
+| `account_format` | string | 否 | Outlook 文本格式，默认 `client_id_refresh_token`，也支持 `refresh_token_client_id` |
+| `provider` | string | 否 | 默认 `outlook`；IMAP 可传 `gmail`、`qq`、`163`、`126`、`yahoo`、`ali`、`custom` |
+| `imap_host` | string | 否 | `provider=custom` 时必填，其他 IMAP 提供商会自动使用内置主机 |
+| `imap_port` | int | 否 | IMAP 端口，默认 `993` |
+| `forward_enabled` | bool | 否 | 导入后是否开启自动转发，默认 `false` |
+| `sort_order` | int | 否 | 账号排序值 |
+
+普通账号不能导入到系统分组 `临时邮箱`。
+
+#### Outlook 结构化导入示例
+
+```bash
+curl -X POST \
+  -H "X-API-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "group_name": "outlook",
+    "accounts": [
+      {
+        "email": "user@outlook.com",
+        "password": "account-password",
+        "client_id": "client-id",
+        "refresh_token": "refresh-token"
+      }
+    ]
+  }' \
+  "http://localhost:5000/api/external/accounts/import"
+```
+
+#### IMAP 文本导入示例
+
+```bash
+curl -X POST \
+  -H "X-API-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "group_id": 1,
+    "provider": "gmail",
+    "account_string": "user@gmail.com----app-password"
+  }' \
+  "http://localhost:5000/api/external/accounts"
+```
+
+#### 成功响应示例
+
+```json
+{
+  "success": true,
+  "message": "成功添加 1 个账号",
+  "group_id": 1,
+  "group_name": "默认分组",
+  "added_count": 1,
+  "skipped_count": 0,
+  "invalid_count": 0,
+  "valid_count": 1,
+  "emails": ["user@outlook.com"]
+}
+```
+
+- `added_count` 是实际新增数量
+- `skipped_count` 是已存在而跳过的数量；重复提交同一邮箱不会新增
+- `invalid_count` 是格式无效或缺少必要字段的数量
 
 ### GET `/api/external/emails`
 

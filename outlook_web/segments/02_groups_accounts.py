@@ -39,6 +39,17 @@ def get_group_by_id(group_id: int) -> Optional[Dict]:
     return dict(row) if row else None
 
 
+def get_group_by_name(name: str) -> Optional[Dict]:
+    """根据名称获取分组"""
+    group_name = str(name or '').strip()
+    if not group_name:
+        return None
+    db = get_db()
+    cursor = db.execute('SELECT * FROM groups WHERE name = ?', (group_name,))
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
 def get_movable_group_ids(db=None, exclude_group_id: Optional[int] = None) -> List[int]:
     """获取可排序分组 ID 列表（不含临时邮箱）"""
     database = db or get_db()

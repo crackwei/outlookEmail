@@ -621,7 +621,7 @@ def api_get_accounts():
     # 返回时隐藏敏感信息
     safe_accounts = []
     for acc in accounts:
-        safe_accounts.append(serialize_account_summary(acc, {}))
+        safe_accounts.append(serialize_account_summary(acc))
     total = count_accounts(group_id, tag_ids=list_args['tag_ids'], include_untagged=list_args['include_untagged'])
     return jsonify(build_account_list_response(
         safe_accounts,
@@ -644,7 +644,7 @@ def api_external_get_accounts():
         safe_accounts.append(
             serialize_account_summary(
                 acc,
-                {},
+                None,
                 include_client_meta=False,
                 include_imap_meta=False
             )
@@ -654,6 +654,215 @@ def api_external_get_accounts():
         'success': True,
         'total': len(safe_accounts),
         'accounts': safe_accounts
+    })
+
+
+def get_external_account_import_payload() -> Dict[str, Any]:
+    data = request.get_json(silent=True)
+    if isinstance(data, dict):
+        return data
+    if request.form:
+        return request.form.to_dict()
+    return {}
+
+
+def resolve_external_account_import_group(data: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], Optional[Any]]:
+    raw_group_id = data.get('group_id', request.args.get('group_id'))
+    raw_group_name = (
+        data.get('group_name')
+        or data.get('group')
+        or request.args.get('group_name')
+        or request.args.get('group')
+        or ''
+    )
+
+    if raw_group_id not in (None, ''):
+        try:
+            group_id = int(raw_group_id)
+        except (TypeError, ValueError):
+            return None, (jsonify({'success': False, 'error': 'group_id 无效'}), 400)
+        group = get_group_by_id(group_id)
+        if not group:
+            return None, (jsonify({'success': False, 'error': '分组不存在'}), 404)
+        if group.get('name') == '临时邮箱':
+            return None, (jsonify({'success': False, 'error': '普通邮箱导入不能使用临时邮箱分组'}), 400)
+        return group, None
+
+    group_name = str(raw_group_name or '').strip()
+    if group_name:
+        group = get_group_by_id(int(group_name)) if group_name.isdigit() else get_group_by_name(group_name)
+        if not group:
+            return None, (jsonify({'success': False, 'error': '分组不存在'}), 404)
+        if group.get('name') == '临时邮箱':
+            return None, (jsonify({'success': False, 'error': '普通邮箱导入不能使用临时邮箱分组'}), 400)
+        return group, None
+
+    group = get_group_by_id(1)
+    if not group:
+        return None, (jsonify({'success': False, 'error': '默认分组不存在'}), 500)
+    return group, None
+
+
+def parse_optional_imap_port(value: Any, default: int = 993) -> Optional[int]:
+    try:
+        return int(value or default)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_structured_account_import_item(item: Dict[str, Any],
+                                         default_provider: str = 'outlook',
+                                         default_imap_host: str = '',
+                                         default_imap_port: int = 993) -> Optional[Dict[str, Any]]:
+    if not isinstance(item, dict):
+        return None
+
+    email_addr = normalize_email_address(item.get('email') or item.get('email_addr') or item.get('address') or '')
+    if not email_addr or '@' not in email_addr:
+        return None
+
+    provider_key = normalize_provider(item.get('provider') or default_provider, email_addr)
+    if provider_key == 'outlook':
+        client_id = str(item.get('client_id') or item.get('clientId') or '').strip()
+        refresh_token = str(item.get('refresh_token') or item.get('refreshToken') or '').strip()
+        if not client_id or not refresh_token:
+            return None
+        return {
+            'email': email_addr,
+            'password': str(item.get('password') or '').strip(),
+            'client_id': client_id,
+            'refresh_token': refresh_token,
+            'provider': 'outlook',
+            'account_type': 'outlook',
+            'imap_host': IMAP_SERVER_NEW,
+            'imap_port': IMAP_PORT,
+            'imap_password': '',
+        }
+
+    imap_password = str(item.get('imap_password') or item.get('password') or '').strip()
+    if not imap_password:
+        return None
+
+    imap_host = str(item.get('imap_host') or default_imap_host or '').strip()
+    imap_port = parse_optional_imap_port(item.get('imap_port', default_imap_port))
+    if imap_port is None:
+        return None
+
+    provider_meta = get_provider_meta(provider_key, email_addr)
+    if provider_meta['key'] == 'custom' and not imap_host:
+        return None
+
+    return {
+        'email': email_addr,
+        'password': '',
+        'client_id': '',
+        'refresh_token': '',
+        'provider': provider_meta['key'],
+        'account_type': 'imap',
+        'imap_host': imap_host or provider_meta.get('imap_host', ''),
+        'imap_port': imap_port or provider_meta.get('imap_port', 993),
+        'imap_password': imap_password,
+    }
+
+
+def parse_external_account_import_payload(data: Dict[str, Any]) -> tuple[List[Dict[str, Any]], int, Optional[str]]:
+    account_format = data.get('account_format', 'client_id_refresh_token')
+    provider = data.get('provider', 'outlook')
+    imap_host = (data.get('imap_host', '') or '').strip()
+    imap_port = parse_optional_imap_port(data.get('imap_port', 993))
+    if imap_port is None:
+        return [], 0, 'IMAP 端口无效'
+
+    parsed_accounts: List[Dict[str, Any]] = []
+    invalid_count = 0
+
+    account_str = str(data.get('account_string') or data.get('accounts_text') or '').strip()
+    if account_str:
+        for line in account_str.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            parsed = parse_account_import(line, account_format, provider, imap_host, imap_port)
+            if parsed:
+                parsed_accounts.append(parsed)
+            else:
+                invalid_count += 1
+
+    structured_items = data.get('accounts')
+    if isinstance(structured_items, dict):
+        structured_items = [structured_items]
+    if structured_items is None and any(key in data for key in ('email', 'email_addr', 'address')):
+        structured_items = [data]
+
+    if isinstance(structured_items, list):
+        for item in structured_items:
+            if isinstance(item, str):
+                parsed = parse_account_import(item.strip(), account_format, provider, imap_host, imap_port)
+            else:
+                parsed = parse_structured_account_import_item(item, provider, imap_host, imap_port)
+            if parsed:
+                parsed_accounts.append(parsed)
+            else:
+                invalid_count += 1
+    elif structured_items not in (None, ''):
+        invalid_count += 1
+
+    return parsed_accounts, invalid_count, None
+
+
+@app.route('/api/external/accounts', methods=['POST'])
+@app.route('/api/external/accounts/import', methods=['POST'])
+@csrf_exempt
+@api_key_required
+def api_external_import_accounts():
+    """对外 API：通过 API Key 导入普通邮箱账号。"""
+    data = get_external_account_import_payload()
+    group, error_response = resolve_external_account_import_group(data)
+    if error_response:
+        return error_response
+
+    parsed_accounts, invalid_count, parse_error = parse_external_account_import_payload(data)
+    if parse_error:
+        return jsonify({'success': False, 'error': parse_error}), 400
+    if not parsed_accounts:
+        return jsonify({
+            'success': False,
+            'error': '没有可导入的有效账号',
+            'added_count': 0,
+            'skipped_count': 0,
+            'invalid_count': invalid_count,
+        }), 400
+
+    forward_enabled = parse_bool_flag(data.get('forward_enabled'), False)
+    sort_order = parse_account_sort_order_input(data.get('sort_order')) if 'sort_order' in data else None
+    result = add_accounts_bulk(parsed_accounts, int(group['id']), forward_enabled, sort_order)
+    added = result.get('added_count', 0)
+    skipped_count = result.get('skipped_count', 0)
+
+    if added > 0:
+        log_audit('import', 'external_accounts', str(group['id']), f"通过对外 API 导入 {added} 个普通邮箱")
+
+    message = f'成功添加 {added} 个账号'
+    if added == 0 and skipped_count:
+        message = '账号已存在，未新增'
+    detail_parts = []
+    if skipped_count:
+        detail_parts.append(f'跳过重复 {skipped_count} 个')
+    if invalid_count:
+        detail_parts.append(f'格式无效 {invalid_count} 行')
+    if detail_parts:
+        message += '，' + '，'.join(detail_parts)
+
+    return jsonify({
+        'success': added > 0 or skipped_count > 0,
+        'message': message,
+        'group_id': group['id'],
+        'group_name': group['name'],
+        'added_count': added,
+        'skipped_count': skipped_count,
+        'invalid_count': invalid_count,
+        'valid_count': len(parsed_accounts),
+        'emails': [item.get('email', '') for item in parsed_accounts],
     })
 
 
@@ -1010,7 +1219,7 @@ def api_search_accounts():
     )
     safe_accounts = []
     for acc in accounts:
-        safe_accounts.append(serialize_account_summary(acc, {}))
+        safe_accounts.append(serialize_account_summary(acc))
 
     total = count_accounts(
         group_id,

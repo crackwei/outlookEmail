@@ -650,6 +650,150 @@ class ExternalAccountsApiTests(unittest.TestCase):
         self.assertFalse(payload['success'])
         self.assertIn('API Key', payload['error'])
 
+    def test_external_accounts_import_requires_api_key(self):
+        response = self.client.post('/api/external/accounts/import', json={
+            'accounts': [{
+                'email': 'api-import@example.com',
+                'client_id': 'client-id',
+                'refresh_token': 'refresh-token',
+            }]
+        })
+
+        self.assertEqual(response.status_code, 401)
+        payload = response.get_json()
+        self.assertFalse(payload['success'])
+        self.assertIn('API Key', payload['error'])
+
+    def test_external_accounts_imports_structured_outlook_account(self):
+        with self.app.app_context():
+            db = web_outlook_app.get_db()
+            cursor = db.execute(
+                '''
+                INSERT INTO groups (name, description, color, sort_order, is_system)
+                VALUES (?, '', '#336699', 999, 0)
+                ''',
+                ('outlook-api',)
+            )
+            db.commit()
+            group_id = int(cursor.lastrowid)
+
+        response = self.client.post(
+            '/api/external/accounts/import',
+            headers={'X-API-Key': 'test-external-key'},
+            json={
+                'group_name': 'outlook-api',
+                'accounts': [{
+                    'email': 'api-import-outlook@example.com',
+                    'password': 'password123',
+                    'client_id': 'client-id',
+                    'refresh_token': 'refresh-token',
+                }]
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['added_count'], 1)
+        self.assertEqual(payload['skipped_count'], 0)
+        self.assertEqual(payload['group_id'], group_id)
+
+        with self.app.app_context():
+            row = web_outlook_app.get_db().execute(
+                '''
+                SELECT email, group_id, account_type, provider, client_id, refresh_token
+                FROM accounts
+                WHERE email = ?
+                ''',
+                ('api-import-outlook@example.com',)
+            ).fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row['group_id'], group_id)
+        self.assertEqual(row['account_type'], 'outlook')
+        self.assertEqual(row['provider'], 'outlook')
+        self.assertEqual(row['client_id'], 'client-id')
+        self.assertTrue(row['refresh_token'])
+
+    def test_external_accounts_imports_account_string_and_is_idempotent(self):
+        request_body = {
+            'account_string': 'api-import-gmail@example.com----imap-password\nbad-line',
+            'provider': 'gmail',
+            'group_id': 1,
+        }
+
+        first_response = self.client.post(
+            '/api/external/accounts',
+            headers={'X-API-Key': 'test-external-key'},
+            json=request_body
+        )
+        self.assertEqual(first_response.status_code, 200)
+        first_payload = first_response.get_json()
+        self.assertTrue(first_payload['success'])
+        self.assertEqual(first_payload['added_count'], 1)
+        self.assertEqual(first_payload['invalid_count'], 1)
+
+        second_response = self.client.post(
+            '/api/external/accounts',
+            headers={'X-API-Key': 'test-external-key'},
+            json=request_body
+        )
+        self.assertEqual(second_response.status_code, 200)
+        second_payload = second_response.get_json()
+        self.assertTrue(second_payload['success'])
+        self.assertEqual(second_payload['added_count'], 0)
+        self.assertEqual(second_payload['skipped_count'], 1)
+        self.assertEqual(second_payload['invalid_count'], 1)
+
+        with self.app.app_context():
+            row = web_outlook_app.get_db().execute(
+                '''
+                SELECT email, account_type, provider, imap_host, imap_password
+                FROM accounts
+                WHERE email = ?
+                ''',
+                ('api-import-gmail@example.com',)
+            ).fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row['account_type'], 'imap')
+        self.assertEqual(row['provider'], 'gmail')
+        self.assertEqual(row['imap_host'], 'imap.gmail.com')
+        self.assertTrue(row['imap_password'])
+
+    def test_external_accounts_import_rejects_invalid_payload(self):
+        response = self.client.post(
+            '/api/external/accounts/import',
+            headers={'X-API-Key': 'test-external-key'},
+            json={'accounts': [{'email': 'missing-token@example.com'}]}
+        )
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertFalse(payload['success'])
+        self.assertEqual(payload['added_count'], 0)
+        self.assertEqual(payload['invalid_count'], 1)
+
+    def test_external_accounts_import_rejects_temp_email_group(self):
+        response = self.client.post(
+            '/api/external/accounts/import',
+            headers={'X-API-Key': 'test-external-key'},
+            json={
+                'group_name': '临时邮箱',
+                'accounts': [{
+                    'email': 'api-temp-group@example.com',
+                    'password': 'password123',
+                    'client_id': 'client-id',
+                    'refresh_token': 'refresh-token',
+                }]
+            }
+        )
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertFalse(payload['success'])
+        self.assertIn('临时邮箱分组', payload['error'])
+
     def test_internal_emails_requires_login(self):
         response = self.client.get('/api/emails/user@outlook.com?folder=inbox')
 

@@ -398,6 +398,7 @@ user@example.com----app-password----imap.example.com----993
 当前额外支持：
 
 - 使用主邮箱或别名邮箱取信
+- 支持通过 API Key 导入普通邮箱账号，无需 Web 登录
 - `folder=all` 一次聚合收件箱和垃圾邮件并按标准化后的邮件时间倒序排序，`top` 按每个文件夹分别计算
 - 支持按主题、发件人、关键词筛选列表
 - 支持特殊字符别名，例如 `user+alias@example.com`
@@ -420,6 +421,12 @@ curl -H "X-API-Key: your-api-key" \
 
 curl -H "X-API-Key: your-api-key" \
   "http://localhost:5000/api/external/emails?email=user%2Balias%40example.com"
+
+curl -X POST \
+  -H "X-API-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"group_name":"outlook","accounts":[{"email":"user@outlook.com","password":"account-password","client_id":"client-id","refresh_token":"refresh-token"}]}' \
+  "http://localhost:5000/api/external/accounts/import"
 ```
 
 如果邮箱或别名里带特殊字符：
