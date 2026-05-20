@@ -2543,6 +2543,18 @@ def is_probable_client_id(value: str) -> bool:
         return False
 
 
+def split_account_import_fields(account_str: str) -> List[str]:
+    raw_value = str(account_str or '').strip()
+    if '----' in raw_value:
+        return [part.strip() for part in raw_value.split('----', 3)]
+    return [part.strip() for part in raw_value.split(':', 3)]
+
+
+def get_account_import_email_candidate(account_str: str) -> str:
+    parts = split_account_import_fields(account_str)
+    return parts[0].strip() if parts else ''
+
+
 def resolve_outlook_token_order(third: str, fourth: str,
                                 account_format: str = 'client_id_refresh_token') -> tuple[str, str]:
     third = str(third or '').strip()
@@ -2558,13 +2570,20 @@ def resolve_outlook_token_order(third: str, fourth: str,
     if fourth_is_client_id and not third_is_client_id:
         return fourth, third
 
+    third_length = len(third)
+    fourth_length = len(fourth)
+    if third_length and fourth_length and third_length != fourth_length:
+        if third_length < fourth_length:
+            return third, fourth
+        return fourth, third
+
     if account_format == 'refresh_token_client_id':
         return fourth, third
     return third, fourth
 
 
 def parse_account_string(account_str: str, account_format: str = 'client_id_refresh_token') -> Optional[Dict]:
-    parts = [part.strip() for part in account_str.strip().split('----')]
+    parts = split_account_import_fields(account_str)
     if len(parts) < 4 or not parts[0]:
         return None
 
@@ -2586,7 +2605,7 @@ def parse_account_string(account_str: str, account_format: str = 'client_id_refr
 
 
 def parse_outlook_account_string(account_str: str, account_format: str = 'client_id_refresh_token') -> Optional[Dict]:
-    parts = [part.strip() for part in account_str.strip().split('----')]
+    parts = split_account_import_fields(account_str)
     if len(parts) < 4 or not parts[0]:
         return None
 
@@ -2650,7 +2669,7 @@ def parse_imap_account_string(account_str: str, provider: str = 'custom', imap_h
 
 def parse_account_import(account_str: str, account_format: str = 'client_id_refresh_token',
                          provider: str = 'outlook', imap_host: str = '', imap_port: int = 993) -> Optional[Dict]:
-    provider_key = normalize_provider(provider, account_str.split('----', 1)[0].strip() if account_str else '')
+    provider_key = normalize_provider(provider, get_account_import_email_candidate(account_str))
     if provider_key == 'outlook':
         return parse_outlook_account_string(account_str, account_format)
     return parse_imap_account_string(account_str, provider_key, imap_host, imap_port)

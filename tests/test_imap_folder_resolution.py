@@ -84,6 +84,29 @@ class ImapFolderResolutionTests(unittest.TestCase):
         self.assertEqual(parsed['client_id'], '24d9a0ed-8787-4584-883c-2fd79308940a')
         self.assertEqual(parsed['refresh_token'], '0.AXEA_refresh')
 
+    def test_parse_outlook_import_accepts_colon_delimiter(self):
+        parsed = web_outlook_app.parse_outlook_account_string(
+            'user@outlook.com:password123:24d9a0ed-8787-4584-883c-2fd79308940a:0.AXEA_refresh',
+            'client_id_refresh_token',
+        )
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed['email'], 'user@outlook.com')
+        self.assertEqual(parsed['password'], 'password123')
+        self.assertEqual(parsed['client_id'], '24d9a0ed-8787-4584-883c-2fd79308940a')
+        self.assertEqual(parsed['refresh_token'], '0.AXEA_refresh')
+
+    def test_parse_outlook_import_detects_long_refresh_token_with_colon_delimiter(self):
+        long_refresh_token = '0.' + ('AXEA' * 40)
+        parsed = web_outlook_app.parse_outlook_account_string(
+            f'user@outlook.com:password123:{long_refresh_token}:short-client-id',
+            'client_id_refresh_token',
+        )
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed['client_id'], 'short-client-id')
+        self.assertEqual(parsed['refresh_token'], long_refresh_token)
+
     def test_email_query_candidates_combine_plus_and_gmail_suffix_fallbacks(self):
         candidates = web_outlook_app.build_email_query_candidates('User+Team+Code@Gmail.com')
 
@@ -760,6 +783,40 @@ class ExternalAccountsApiTests(unittest.TestCase):
         self.assertEqual(row['provider'], 'gmail')
         self.assertEqual(row['imap_host'], 'imap.gmail.com')
         self.assertTrue(row['imap_password'])
+
+    def test_external_accounts_imports_colon_delimited_outlook_account(self):
+        long_refresh_token = '0.' + ('AXEA' * 40)
+        response = self.client.post(
+            '/api/external/accounts/import',
+            headers={'X-API-Key': 'test-external-key'},
+            json={
+                'group_id': 1,
+                'account_string': f'api-import-colon@example.com:password123:{long_refresh_token}:short-client-id',
+                'provider': 'outlook',
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['added_count'], 1)
+        self.assertEqual(payload['invalid_count'], 0)
+
+        with self.app.app_context():
+            row = web_outlook_app.get_db().execute(
+                '''
+                SELECT email, account_type, provider, client_id, refresh_token
+                FROM accounts
+                WHERE email = ?
+                ''',
+                ('api-import-colon@example.com',)
+            ).fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row['account_type'], 'outlook')
+        self.assertEqual(row['provider'], 'outlook')
+        self.assertEqual(row['client_id'], 'short-client-id')
+        self.assertTrue(row['refresh_token'])
 
     def test_external_accounts_import_rejects_invalid_payload(self):
         response = self.client.post(

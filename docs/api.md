@@ -351,7 +351,7 @@ curl -H "X-API-Key: your-api-key" \
 | `group_name` / `group` | string | 否 | 目标分组名称，也可传数字字符串 |
 | `account_string` / `accounts_text` | string | 否 | 多行导入文本，格式同 Web 导入 |
 | `accounts` | array/object | 否 | 结构化账号列表，也可传单个对象 |
-| `account_format` | string | 否 | Outlook 文本格式，默认 `client_id_refresh_token`，也支持 `refresh_token_client_id` |
+| `account_format` | string | 否 | Outlook 文本格式，默认 `client_id_refresh_token`，也支持 `refresh_token_client_id`；文本导入兼容 `----` 或 `:` 分隔 |
 | `provider` | string | 否 | 默认 `outlook`；IMAP 可传 `gmail`、`qq`、`163`、`126`、`yahoo`、`ali`、`custom` |
 | `imap_host` | string | 否 | `provider=custom` 时必填，其他 IMAP 提供商会自动使用内置主机 |
 | `imap_port` | int | 否 | IMAP 端口，默认 `993` |
@@ -609,7 +609,7 @@ curl -H "X-API-Key: your-api-key" \
 | --- | --- | --- | --- |
 | `account_string` | string | 是 | 多行账号文本 |
 | `group_id` | int | 否 | 目标分组，默认 `1` |
-| `account_format` | string | 否 | Outlook 导入格式：`client_id_refresh_token` 或 `refresh_token_client_id` |
+| `account_format` | string | 否 | Outlook 导入格式：`client_id_refresh_token` 或 `refresh_token_client_id`；文本导入兼容 `----` 或 `:` 分隔 |
 | `provider` | string | 否 | `outlook`、`auto`、`qq`、`163`、`126`、`yahoo`、`aliyun`、`custom` |
 | `imap_host` | string | 否 | `provider=custom` 时的 IMAP 服务器 |
 | `imap_port` | int | 否 | `provider=custom` 时的 IMAP 端口 |
@@ -625,8 +625,9 @@ curl -H "X-API-Key: your-api-key" \
 
 #### 导入格式
 
-- Outlook: 每行 `邮箱----密码----ClientID----RefreshToken`
-- Outlook 反序: 每行 `邮箱----密码----RefreshToken----ClientID`，并设置 `account_format=refresh_token_client_id`
+- Outlook: 每行 `邮箱----密码----ClientID----RefreshToken` 或 `邮箱:密码:ClientID:RefreshToken`
+- Outlook 反序: 每行 `邮箱----密码----RefreshToken----ClientID` 或 `邮箱:密码:RefreshToken:ClientID`
+- Outlook 会自动识别后两段顺序：UUID 形态优先识别为 `ClientID`；当不是标准 UUID 时，较短的一段会识别为 `ClientID`，较长的一段会识别为 `RefreshToken`
 - 非 Outlook IMAP: 每行 `邮箱----IMAP密码`
 - 自定义 IMAP: 每行 `邮箱----IMAP密码----IMAP主机----IMAP端口`
 

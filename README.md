@@ -291,13 +291,18 @@ Web 应用采用四栏式布局设计：
 ```txt
 邮箱----密码----client_id----refresh_token
 邮箱----密码----refresh_token----client_id
+邮箱:密码:client_id:refresh_token
+邮箱:密码:refresh_token:client_id
 ```
 
 示例：
 
 ```txt
 user@outlook.com----password123----24d9a0ed-8787-4584-883c-2fd79308940a----0.AXEA...
+user@outlook.com:password123:24d9a0ed-8787-4584-883c-2fd79308940a:0.AXEA...
 ```
+
+导入时会自动识别后两段的顺序：UUID 形态优先识别为 `client_id`；当不是标准 UUID 时，会按长度差异将较短的一段作为 `client_id`、较长的一段作为 `refresh_token`。
 
 #### 标准 IMAP 邮箱
 
