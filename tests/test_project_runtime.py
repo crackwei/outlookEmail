@@ -644,6 +644,48 @@ class ProjectRuntimeTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertIsNone(row['sort_order'])
 
+    def test_add_account_rejects_unknown_group(self):
+        response = self.client.post(
+            '/api/accounts',
+            json={
+                'account_string': 'missing-group@example.com----password----client-id----refresh-token',
+                'group_id': 999999,
+                'provider': 'outlook',
+            }
+        )
+
+        self.assertEqual(response.status_code, 404)
+        payload = response.get_json()
+        self.assertFalse(payload['success'])
+        self.assertEqual(payload['error'], '分组不存在')
+
+        with self.app.app_context():
+            row = web_outlook_app.get_db().execute(
+                'SELECT id FROM accounts WHERE email = ?',
+                ('missing-group@example.com',)
+            ).fetchone()
+
+        self.assertIsNone(row)
+
+    def test_add_account_rejects_temp_email_group(self):
+        with self.app.app_context():
+            temp_group = web_outlook_app.get_group_by_name('临时邮箱')
+            self.assertIsNotNone(temp_group)
+
+        response = self.client.post(
+            '/api/accounts',
+            json={
+                'account_string': 'temp-group@example.com----password----client-id----refresh-token',
+                'group_id': temp_group['id'],
+                'provider': 'outlook',
+            }
+        )
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertFalse(payload['success'])
+        self.assertIn('临时邮箱分组', payload['error'])
+
     def test_update_account_without_sort_order_clears_custom_sort(self):
         account_id = self._insert_account('clear-sort@example.com')
         with self.app.app_context():
@@ -679,6 +721,40 @@ class ProjectRuntimeTests(unittest.TestCase):
 
         self.assertIsNotNone(row)
         self.assertIsNone(row['sort_order'])
+
+    def test_update_account_rejects_unknown_group(self):
+        account_id = self._insert_account('update-missing-group@example.com')
+
+        response = self.client.put(
+            f'/api/accounts/{account_id}',
+            json={
+                'email': 'update-missing-group@example.com',
+                'password': '',
+                'client_id': 'client-id',
+                'refresh_token': 'refresh-token',
+                'account_type': 'outlook',
+                'provider': 'outlook',
+                'group_id': 999999,
+                'remark': '',
+                'aliases': [],
+                'status': 'active',
+                'forward_enabled': False,
+            }
+        )
+
+        self.assertEqual(response.status_code, 404)
+        payload = response.get_json()
+        self.assertFalse(payload['success'])
+        self.assertEqual(payload['error'], '分组不存在')
+
+        with self.app.app_context():
+            row = web_outlook_app.get_db().execute(
+                'SELECT group_id FROM accounts WHERE id = ?',
+                (account_id,)
+            ).fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row['group_id'], 1)
 
     def test_settings_show_account_sort_order_roundtrips(self):
         response = self.client.get('/api/settings')

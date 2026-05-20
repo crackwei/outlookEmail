@@ -1267,18 +1267,16 @@ def api_update_account_v2(account_id):
     provider = (data.get('provider', 'outlook') or 'outlook').strip().lower()
     imap_host = (data.get('imap_host', '') or '').strip()
     imap_password = data.get('imap_password', '') or ''
-    group_id = data.get('group_id', 1)
+    group, error_response = resolve_account_import_group(data)
+    if error_response:
+        return error_response
+    group_id = int(group['id'])
     sort_order = parse_account_sort_order_input(data.get('sort_order')) if 'sort_order' in data else None
     remark = sanitize_input(data.get('remark', ''), max_length=200)
     status = data.get('status', 'active')
     forward_enabled = bool(data.get('forward_enabled', False))
     aliases_provided = 'aliases' in data
     aliases = parse_alias_payload(data.get('aliases', [])) if aliases_provided else []
-
-    try:
-        group_id = int(group_id or 1)
-    except (TypeError, ValueError):
-        group_id = 1
 
     try:
         imap_port = int(data.get('imap_port', 993) or 993)

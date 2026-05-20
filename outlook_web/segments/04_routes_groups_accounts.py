@@ -666,41 +666,60 @@ def get_external_account_import_payload() -> Dict[str, Any]:
     return {}
 
 
-def resolve_external_account_import_group(data: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], Optional[Any]]:
-    raw_group_id = data.get('group_id', request.args.get('group_id'))
-    raw_group_name = (
-        data.get('group_name')
-        or data.get('group')
-        or request.args.get('group_name')
-        or request.args.get('group')
-        or ''
-    )
+def get_default_account_import_group() -> Optional[Dict[str, Any]]:
+    return get_group_by_name('默认分组') or get_group_by_id(1)
+
+
+def validate_regular_account_group(group: Optional[Dict[str, Any]]) -> Optional[Any]:
+    if not group:
+        return jsonify({'success': False, 'error': '分组不存在'}), 404
+    if group.get('name') == '临时邮箱':
+        return jsonify({'success': False, 'error': '普通邮箱导入不能使用临时邮箱分组'}), 400
+    return None
+
+
+def resolve_account_import_group(data: Dict[str, Any], *, allow_query_args: bool = False) -> tuple[Optional[Dict[str, Any]], Optional[Any]]:
+    payload = data or {}
+    raw_group_id = payload.get('group_id')
+    raw_group_name = payload.get('group_name') or payload.get('group') or ''
+
+    if allow_query_args:
+        if raw_group_id in (None, ''):
+            raw_group_id = request.args.get('group_id')
+        if not raw_group_name:
+            raw_group_name = request.args.get('group_name') or request.args.get('group') or ''
 
     if raw_group_id not in (None, ''):
+        if isinstance(raw_group_id, bool):
+            return None, (jsonify({'success': False, 'error': 'group_id 无效'}), 400)
         try:
             group_id = int(raw_group_id)
         except (TypeError, ValueError):
             return None, (jsonify({'success': False, 'error': 'group_id 无效'}), 400)
         group = get_group_by_id(group_id)
-        if not group:
-            return None, (jsonify({'success': False, 'error': '分组不存在'}), 404)
-        if group.get('name') == '临时邮箱':
-            return None, (jsonify({'success': False, 'error': '普通邮箱导入不能使用临时邮箱分组'}), 400)
+        if not group and group_id == 1:
+            group = get_default_account_import_group()
+        error_response = validate_regular_account_group(group)
+        if error_response:
+            return None, error_response
         return group, None
 
     group_name = str(raw_group_name or '').strip()
     if group_name:
         group = get_group_by_id(int(group_name)) if group_name.isdigit() else get_group_by_name(group_name)
-        if not group:
-            return None, (jsonify({'success': False, 'error': '分组不存在'}), 404)
-        if group.get('name') == '临时邮箱':
-            return None, (jsonify({'success': False, 'error': '普通邮箱导入不能使用临时邮箱分组'}), 400)
+        error_response = validate_regular_account_group(group)
+        if error_response:
+            return None, error_response
         return group, None
 
-    group = get_group_by_id(1)
+    group = get_default_account_import_group()
     if not group:
         return None, (jsonify({'success': False, 'error': '默认分组不存在'}), 500)
     return group, None
+
+
+def resolve_external_account_import_group(data: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], Optional[Any]]:
+    return resolve_account_import_group(data, allow_query_args=True)
 
 
 def parse_optional_imap_port(value: Any, default: int = 993) -> Optional[int]:
@@ -1323,9 +1342,12 @@ def api_replace_account_aliases_endpoint(account_id):
 @login_required
 def api_add_account():
     """添加账号"""
-    data = request.json
+    data = request.json or {}
     account_str = data.get('account_string', '')
-    group_id = data.get('group_id', 1)
+    group, error_response = resolve_account_import_group(data)
+    if error_response:
+        return error_response
+    group_id = int(group['id'])
     account_format = data.get('account_format', 'client_id_refresh_token')
     provider = data.get('provider', 'outlook')
     forward_enabled = bool(data.get('forward_enabled', False))
@@ -1388,7 +1410,7 @@ def api_add_account():
 @login_required
 def api_update_account(account_id):
     """更新账号"""
-    data = request.json
+    data = request.json or {}
 
     # 检查是否只更新状态
     if 'status' in data and len(data) == 1:
@@ -1404,7 +1426,10 @@ def api_update_account(account_id):
     imap_host = (data.get('imap_host', '') or '').strip()
     imap_port = data.get('imap_port', 993)
     imap_password = data.get('imap_password', '')
-    group_id = data.get('group_id', 1)
+    group, error_response = resolve_account_import_group(data)
+    if error_response:
+        return error_response
+    group_id = int(group['id'])
     sort_order = parse_account_sort_order_input(data.get('sort_order')) if 'sort_order' in data else None
     remark = sanitize_input(data.get('remark', ''), max_length=200)
     status = data.get('status', 'active')
