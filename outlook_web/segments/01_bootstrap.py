@@ -1432,12 +1432,6 @@ def init_db():
         VALUES ('临时邮箱', 'GPTMail 临时邮箱服务', '#00bcf2', 1)
     ''')
 
-    # 创建 Outlook 普通邮箱分组，避免数据重建后前端导入目标分组缺失。
-    cursor.execute('''
-        INSERT OR IGNORE INTO groups (name, description, color, is_system)
-        VALUES ('Outlook分组', 'Outlook OAuth 邮箱账号', '#0078d4', 0)
-    ''')
-
     # 归一化分组排序值，临时邮箱固定在最前，其他分组保留已有相对顺序。
     normalize_group_sort_orders_on_startup(cursor)
     

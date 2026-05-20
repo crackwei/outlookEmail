@@ -84,9 +84,7 @@
         // 添加账号
         async function addAccountLegacy() {
             const input = document.getElementById('accountInput').value.trim();
-            const groupSelect = document.getElementById('importGroupSelect');
-            const groupId = parseInt(groupSelect.value);
-            const selectedGroupName = groupSelect.options[groupSelect.selectedIndex]?.textContent?.trim() || '';
+            const groupId = parseInt(document.getElementById('importGroupSelect').value);
 
             if (!input) {
                 showToast('请输入账号信息', 'error');
@@ -111,7 +109,7 @@
                     response = await fetch('/api/accounts', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ account_string: input, group_id: groupId, group_name: selectedGroupName })
+                        body: JSON.stringify({ account_string: input, group_id: groupId })
                     });
                 }
 
@@ -122,11 +120,7 @@
                     hideAddAccountModal();
 
                     // 清除该分组的缓存
-                    const targetGroupId = parseInt(data.group_id || groupId, 10);
                     delete accountsCache[groupId];
-                    if (targetGroupId !== groupId) {
-                        delete accountsCache[targetGroupId];
-                    }
 
                     // 刷新分组列表（更新数量）
                     await loadGroups();
@@ -135,8 +129,7 @@
                     if (isTempGroup) {
                         await loadTempEmails(true);
                     } else {
-                        currentGroupId = targetGroupId;
-                        await loadAccountsByGroup(targetGroupId, true);
+                        await loadAccountsByGroup(groupId, true);
                     }
                 } else {
                     handleApiError(data, '导入失败');

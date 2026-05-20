@@ -574,9 +574,7 @@
 
         async function addAccount() {
             const input = document.getElementById('accountInput').value.trim();
-            const groupSelect = document.getElementById('importGroupSelect');
-            const groupId = parseInt(groupSelect.value, 10);
-            const selectedGroupName = groupSelect.options[groupSelect.selectedIndex]?.textContent?.trim() || '';
+            const groupId = parseInt(document.getElementById('importGroupSelect').value);
             const provider = document.getElementById('importProviderSelect')?.value || 'outlook';
             const imapHost = document.getElementById('importImapHost')?.value.trim() || '';
             const imapPort = parseInt(document.getElementById('importImapPort')?.value || '993', 10);
@@ -614,7 +612,6 @@
                         body: JSON.stringify({
                             account_string: input,
                             group_id: groupId,
-                            group_name: selectedGroupName,
                             provider,
                             imap_host: imapHost,
                             imap_port: Number.isFinite(imapPort) ? imapPort : 993,
@@ -627,17 +624,12 @@
                 if (data.success) {
                     showToast(data.message, 'success');
                     hideAddAccountModal();
-                    const targetGroupId = parseInt(data.group_id || groupId, 10);
                     delete accountsCache[groupId];
-                    if (targetGroupId !== groupId) {
-                        delete accountsCache[targetGroupId];
-                    }
                     await loadGroups();
                     if (isTempGroup) {
                         await loadTempEmails(true);
                     } else {
-                        currentGroupId = targetGroupId;
-                        await loadAccountsByGroup(targetGroupId, true);
+                        await loadAccountsByGroup(groupId, true);
                     }
                 } else {
                     handleApiError(data, '导入失败');

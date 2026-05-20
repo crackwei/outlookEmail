@@ -670,32 +670,6 @@ def get_default_account_import_group() -> Optional[Dict[str, Any]]:
     return get_group_by_name('默认分组') or get_group_by_id(1)
 
 
-def get_outlook_account_import_group() -> Optional[Dict[str, Any]]:
-    group = get_group_by_name('Outlook分组')
-    if group:
-        return group
-    try:
-        group_id = add_group('Outlook分组', 'Outlook OAuth 邮箱账号', '#0078d4')
-        if group_id:
-            return get_group_by_id(int(group_id))
-    except Exception:
-        pass
-    return get_group_by_name('Outlook分组') or get_default_account_import_group()
-
-
-def resolve_group_name_candidate(raw_group_name: Any) -> Optional[Dict[str, Any]]:
-    group_name = str(raw_group_name or '').strip()
-    if not group_name:
-        return None
-    return get_group_by_id(int(group_name)) if group_name.isdigit() else get_group_by_name(group_name)
-
-
-def is_outlook_import_payload(payload: Dict[str, Any]) -> bool:
-    provider = str(payload.get('provider') or 'outlook').strip().lower()
-    account_type = str(payload.get('account_type') or '').strip().lower()
-    return provider in ('', 'outlook') or account_type == 'outlook'
-
-
 def validate_regular_account_group(group: Optional[Dict[str, Any]]) -> Optional[Any]:
     if not group:
         return jsonify({'success': False, 'error': '分组不存在'}), 404
@@ -704,8 +678,7 @@ def validate_regular_account_group(group: Optional[Dict[str, Any]]) -> Optional[
     return None
 
 
-def resolve_account_import_group(data: Dict[str, Any], *, allow_query_args: bool = False,
-                                 fallback_outlook_group: bool = False) -> tuple[Optional[Dict[str, Any]], Optional[Any]]:
+def resolve_account_import_group(data: Dict[str, Any], *, allow_query_args: bool = False) -> tuple[Optional[Dict[str, Any]], Optional[Any]]:
     payload = data or {}
     raw_group_id = payload.get('group_id')
     raw_group_name = payload.get('group_name') or payload.get('group') or ''
@@ -726,17 +699,14 @@ def resolve_account_import_group(data: Dict[str, Any], *, allow_query_args: bool
         group = get_group_by_id(group_id)
         if not group and group_id == 1:
             group = get_default_account_import_group()
-        if not group and raw_group_name:
-            group = resolve_group_name_candidate(raw_group_name)
-        if not group and fallback_outlook_group and is_outlook_import_payload(payload):
-            group = get_outlook_account_import_group()
         error_response = validate_regular_account_group(group)
         if error_response:
             return None, error_response
         return group, None
 
-    if str(raw_group_name or '').strip():
-        group = resolve_group_name_candidate(raw_group_name)
+    group_name = str(raw_group_name or '').strip()
+    if group_name:
+        group = get_group_by_id(int(group_name)) if group_name.isdigit() else get_group_by_name(group_name)
         error_response = validate_regular_account_group(group)
         if error_response:
             return None, error_response
@@ -1374,7 +1344,7 @@ def api_add_account():
     """添加账号"""
     data = request.json or {}
     account_str = data.get('account_string', '')
-    group, error_response = resolve_account_import_group(data, fallback_outlook_group=True)
+    group, error_response = resolve_account_import_group(data)
     if error_response:
         return error_response
     group_id = int(group['id'])
@@ -1423,8 +1393,6 @@ def api_add_account():
         return jsonify({
             'success': True,
             'message': message,
-            'group_id': group_id,
-            'group_name': group['name'],
             'added_count': added,
             'skipped_count': skipped_count,
             'invalid_count': invalid_count,
@@ -1433,8 +1401,6 @@ def api_add_account():
         return jsonify({
             'success': False,
             'error': '没有新账号被添加（可能格式错误或已存在）',
-            'group_id': group_id,
-            'group_name': group['name'],
             'skipped_count': skipped_count,
             'invalid_count': invalid_count,
         })
