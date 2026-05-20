@@ -10,6 +10,11 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 - 修复 Outlook Refresh Token 遇到 `AADSTS70000` scope 未授权/过期响应时未继续回退到旧 `.default` 或无 scope 刷新方式的问题。
 - Outlook Refresh Token 在 Graph 刷新失败后会继续尝试 IMAP OAuth 刷新，并保存 IMAP 返回的轮换 `refresh_token`。
 
+## [2.0.49] - 2026-05-21
+
+### Fixed
+- 修复数据重建或浏览器缓存旧分组 ID 后，Outlook 邮箱导入误报“分组不存在”的问题；系统会自动补齐 `Outlook分组`，并在旧 ID 失效时落到该分组。
+
 ## [2.0.48] - 2026-05-18
 
 ### Fixed

@@ -153,7 +153,9 @@
             const email = document.getElementById('oauthEmailInput').value.trim();
             const password = document.getElementById('oauthPasswordInput').value;
             const redirectUrl = document.getElementById('redirectUrlInput').value.trim();
-            const groupId = parseInt(document.getElementById('tokenSaveGroupSelect')?.value || '0', 10);
+            const groupSelect = document.getElementById('tokenSaveGroupSelect');
+            const groupId = parseInt(groupSelect?.value || '0', 10);
+            const selectedGroupName = groupSelect?.options[groupSelect.selectedIndex]?.textContent?.trim() || '';
             const forwardEnabled = !!document.getElementById('oauthForwardEnabled')?.checked;
 
             if (!redirectUrl) {
@@ -189,6 +191,7 @@
                         client_id: data.client_id,
                         refresh_token: data.refresh_token,
                         group_id: groupId,
+                        group_name: selectedGroupName,
                         forward_enabled: forwardEnabled
                     };
                     renderRefreshTokenPreview();
@@ -262,6 +265,7 @@
                     body: JSON.stringify({
                         account_string: accountString,
                         group_id: oauthPreviewAccount.group_id,
+                        group_name: oauthPreviewAccount.group_name,
                         provider: 'outlook',
                         forward_enabled: !!oauthPreviewAccount.forward_enabled
                     })
@@ -270,7 +274,7 @@
                 const data = await response.json();
                 if (data.success) {
                     showToast(data.message || '账号已保存', 'success');
-                    currentGroupId = oauthPreviewAccount.group_id;
+                    currentGroupId = parseInt(data.group_id || oauthPreviewAccount.group_id, 10);
                     await loadGroups();
                     hideGetRefreshTokenModal();
                 } else {

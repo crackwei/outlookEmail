@@ -518,11 +518,11 @@ class ProjectRuntimeTests(unittest.TestCase):
         ordered_groups = self._ordered_groups()
         self.assertEqual(
             [group['name'] for group in ordered_groups],
-            ['临时邮箱', 'Beta Group', '默认分组', 'Alpha Group']
+            ['临时邮箱', 'Beta Group', '默认分组', 'Alpha Group', 'Outlook分组']
         )
         self.assertEqual(
             [group['sort_order'] for group in ordered_groups],
-            [0, 1, 2, 3]
+            [0, 1, 2, 3, 4]
         )
 
     def test_init_db_backfills_missing_group_sort_order_once(self):
@@ -539,12 +539,25 @@ class ProjectRuntimeTests(unittest.TestCase):
         ordered_groups = self._ordered_groups()
         self.assertEqual(
             [group['name'] for group in ordered_groups],
-            ['临时邮箱', '默认分组', 'Gamma Group', 'Delta Group']
+            ['临时邮箱', '默认分组', 'Gamma Group', 'Delta Group', 'Outlook分组']
         )
         self.assertEqual(
             [group['sort_order'] for group in ordered_groups],
-            [0, 1, 2, 3]
+            [0, 1, 2, 3, 4]
         )
+
+    def test_init_db_creates_outlook_import_group(self):
+        with self.app.app_context():
+            db = web_outlook_app.get_db()
+            db.execute("DELETE FROM groups WHERE name = 'Outlook分组'")
+            db.commit()
+            self.assertIsNone(web_outlook_app.get_group_by_name('Outlook分组'))
+
+            web_outlook_app.init_db()
+            outlook_group = web_outlook_app.get_group_by_name('Outlook分组')
+
+        self.assertIsNotNone(outlook_group)
+        self.assertEqual(outlook_group['is_system'], 0)
 
     def test_init_db_adds_account_sort_order_column(self):
         with self.app.app_context():
@@ -644,13 +657,13 @@ class ProjectRuntimeTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertIsNone(row['sort_order'])
 
-    def test_add_account_rejects_unknown_group(self):
+    def test_add_account_rejects_unknown_non_outlook_group(self):
         response = self.client.post(
             '/api/accounts',
             json={
-                'account_string': 'missing-group@example.com----password----client-id----refresh-token',
+                'account_string': 'missing-group@example.com----imap-password',
                 'group_id': 999999,
-                'provider': 'outlook',
+                'provider': 'gmail',
             }
         )
 
@@ -666,6 +679,39 @@ class ProjectRuntimeTests(unittest.TestCase):
             ).fetchone()
 
         self.assertIsNone(row)
+
+    def test_add_outlook_account_with_stale_group_id_uses_outlook_group(self):
+        with self.app.app_context():
+            db = web_outlook_app.get_db()
+            db.execute("DELETE FROM groups WHERE name = 'Outlook分组'")
+            db.commit()
+            self.assertIsNone(web_outlook_app.get_group_by_name('Outlook分组'))
+
+        response = self.client.post(
+            '/api/accounts',
+            json={
+                'account_string': 'stale-group@example.com----password----client-id----refresh-token',
+                'group_id': 999999,
+                'group_name': 'Outlook分组',
+                'provider': 'outlook',
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['group_name'], 'Outlook分组')
+
+        with self.app.app_context():
+            outlook_group = web_outlook_app.get_group_by_name('Outlook分组')
+            row = web_outlook_app.get_db().execute(
+                'SELECT group_id FROM accounts WHERE email = ?',
+                ('stale-group@example.com',)
+            ).fetchone()
+
+        self.assertIsNotNone(outlook_group)
+        self.assertIsNotNone(row)
+        self.assertEqual(row['group_id'], outlook_group['id'])
 
     def test_add_account_rejects_temp_email_group(self):
         with self.app.app_context():
