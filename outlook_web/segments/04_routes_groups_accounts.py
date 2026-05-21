@@ -639,7 +639,16 @@ def api_get_accounts():
 def api_external_get_accounts():
     """对外 API：通过 API Key 获取邮箱账号列表"""
     group_id = request.args.get('group_id', type=int)
-    accounts = load_accounts(group_id)
+    list_args = get_account_list_request_args()
+    accounts = load_accounts(
+        group_id,
+        limit=list_args['limit'],
+        offset=list_args['offset'],
+        sort_by=list_args['sort_by'],
+        sort_order=list_args['sort_order'],
+        tag_ids=list_args['tag_ids'],
+        include_untagged=list_args['include_untagged'],
+    )
 
     safe_accounts = []
     for acc in accounts:
@@ -652,10 +661,147 @@ def api_external_get_accounts():
             )
         )
 
+    total = count_accounts(group_id, tag_ids=list_args['tag_ids'], include_untagged=list_args['include_untagged'])
     return jsonify({
         'success': True,
-        'total': len(safe_accounts),
+        'total': total,
+        'limit': list_args['limit'] if list_args['limit'] is not None else len(safe_accounts),
+        'offset': list_args['offset'],
+        'has_more': list_args['offset'] + len(safe_accounts) < total,
         'accounts': safe_accounts
+    })
+
+
+@app.route('/api/external/tags', methods=['GET'])
+@csrf_exempt
+@api_key_required
+def api_external_get_tags():
+    """对外 API：通过 API Key 获取标签列表"""
+    return jsonify({'success': True, 'tags': get_tags()})
+
+
+def resolve_external_tag_id(data: Dict[str, Any]) -> tuple[Optional[int], Optional[Any]]:
+    raw_tag_id = data.get('tag_id')
+    if raw_tag_id not in (None, ''):
+        try:
+            tag_id = int(raw_tag_id)
+        except (TypeError, ValueError):
+            return None, (jsonify({'success': False, 'error': 'tag_id 无效'}), 400)
+        if tag_id <= 0:
+            return None, (jsonify({'success': False, 'error': 'tag_id 无效'}), 400)
+        return tag_id, None
+
+    tag_name = sanitize_input(str(data.get('tag_name') or data.get('name') or '').strip(), max_length=50)
+    if not tag_name:
+        return None, (jsonify({'success': False, 'error': 'tag_id 或 tag_name 必填'}), 400)
+
+    for tag in get_tags():
+        if str(tag.get('name') or '').strip().lower() == tag_name.lower():
+            return int(tag['id']), None
+
+    tag_id = add_tag(tag_name, str(data.get('color') or '#1a1a1a'))
+    if tag_id:
+        return int(tag_id), None
+
+    for tag in get_tags():
+        if str(tag.get('name') or '').strip().lower() == tag_name.lower():
+            return int(tag['id']), None
+    return None, (jsonify({'success': False, 'error': '标签创建失败'}), 500)
+
+
+def resolve_external_tag_account_ids(data: Dict[str, Any]) -> tuple[List[int], List[str]]:
+    raw_account_ids = data.get('account_ids')
+    if raw_account_ids in (None, ''):
+        raw_account_ids = data.get('account_id')
+    if raw_account_ids in (None, ''):
+        raw_account_ids = []
+    if not isinstance(raw_account_ids, (list, tuple, set)):
+        raw_account_ids = [raw_account_ids]
+
+    account_ids: List[int] = []
+    missing: List[str] = []
+    seen_ids = set()
+    for raw_account_id in raw_account_ids:
+        try:
+            account_id = int(raw_account_id)
+        except (TypeError, ValueError):
+            continue
+        if account_id <= 0 or account_id in seen_ids:
+            continue
+        account = get_account_by_id(account_id)
+        if account:
+            account_ids.append(account_id)
+            seen_ids.add(account_id)
+        else:
+            missing.append(str(raw_account_id))
+
+    raw_emails = data.get('emails')
+    if raw_emails in (None, ''):
+        raw_emails = data.get('email')
+    if raw_emails in (None, ''):
+        raw_emails = []
+    if isinstance(raw_emails, str):
+        raw_emails = [item.strip() for item in raw_emails.replace('\r', '\n').replace(',', '\n').split('\n')]
+    elif not isinstance(raw_emails, (list, tuple, set)):
+        raw_emails = [raw_emails]
+
+    for raw_email in raw_emails:
+        email_addr = str(raw_email or '').strip().lower()
+        if not email_addr:
+            continue
+        account = get_account_by_email(email_addr)
+        if not account:
+            missing.append(email_addr)
+            continue
+        account_id = int(account['id'])
+        if account_id not in seen_ids:
+            account_ids.append(account_id)
+            seen_ids.add(account_id)
+
+    return account_ids, missing
+
+
+@app.route('/api/external/accounts/tags', methods=['POST'])
+@csrf_exempt
+@api_key_required
+def api_external_manage_account_tags():
+    """对外 API：通过 API Key 给普通邮箱账号添加或移除标签"""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        data = request.form.to_dict() if request.form else {}
+
+    tag_id, error_response = resolve_external_tag_id(data)
+    if error_response:
+        return error_response
+
+    account_ids, missing = resolve_external_tag_account_ids(data)
+    if not account_ids:
+        return jsonify({
+            'success': False,
+            'error': '未找到要处理的账号',
+            'missing': missing,
+        }), 404
+
+    action = str(data.get('action') or 'add').strip().lower()
+    if action not in {'add', 'remove'}:
+        return jsonify({'success': False, 'error': 'action 只能是 add 或 remove'}), 400
+
+    count = 0
+    for account_id in account_ids:
+        if action == 'add':
+            if add_account_tag(account_id, tag_id):
+                count += 1
+        else:
+            if remove_account_tag(account_id, tag_id):
+                count += 1
+
+    return jsonify({
+        'success': True,
+        'tag_id': tag_id,
+        'action': action,
+        'processed_count': count,
+        'account_ids': account_ids,
+        'missing': missing,
     })
 
 

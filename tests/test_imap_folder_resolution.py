@@ -665,6 +665,84 @@ class ExternalAccountsApiTests(unittest.TestCase):
         self.assertFalse(payload['success'])
         self.assertIn('API Key', payload['error'])
 
+    def test_external_accounts_supports_tag_filters(self):
+        with self.app.app_context():
+            chatgpt_tag_id = web_outlook_app.add_tag('chatgpt', '#10a37f')
+            self.assertIsNotNone(chatgpt_tag_id)
+            self.assertTrue(web_outlook_app.add_account(
+                'used@outlook.com',
+                'password123',
+                'client-id',
+                'refresh-token',
+                group_id=1,
+            ))
+            self.assertTrue(web_outlook_app.add_account(
+                'untagged@outlook.com',
+                'password123',
+                'client-id',
+                'refresh-token',
+                group_id=1,
+            ))
+            used = web_outlook_app.get_account_by_email('used@outlook.com')
+            self.assertTrue(web_outlook_app.add_account_tag(used['id'], chatgpt_tag_id))
+
+        tagged_response = self.client.get(
+            f'/api/external/accounts?tag_ids={chatgpt_tag_id}',
+            headers={'X-API-Key': 'test-external-key'}
+        )
+        self.assertEqual(tagged_response.status_code, 200)
+        tagged_payload = tagged_response.get_json()
+        self.assertEqual(tagged_payload['total'], 1)
+        self.assertEqual(tagged_payload['accounts'][0]['email'], 'used@outlook.com')
+
+        untagged_response = self.client.get(
+            f'/api/external/accounts?tag_ids={chatgpt_tag_id}&include_untagged=true',
+            headers={'X-API-Key': 'test-external-key'}
+        )
+        self.assertEqual(untagged_response.status_code, 200)
+        untagged_emails = {item['email'] for item in untagged_response.get_json()['accounts']}
+        self.assertIn('used@outlook.com', untagged_emails)
+        self.assertIn('untagged@outlook.com', untagged_emails)
+        self.assertNotIn('user@outlook.com', untagged_emails)
+
+    def test_external_account_tags_creates_tag_and_marks_by_email(self):
+        response = self.client.post(
+            '/api/external/accounts/tags',
+            headers={'X-API-Key': 'test-external-key'},
+            json={
+                'email': 'user@outlook.com',
+                'tag_name': 'chatgpt',
+                'color': '#10a37f',
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['processed_count'], 1)
+
+        accounts_response = self.client.get(
+            '/api/external/accounts',
+            headers={'X-API-Key': 'test-external-key'}
+        )
+        account = accounts_response.get_json()['accounts'][0]
+        self.assertIn('chatgpt', {tag['name'] for tag in account['tags']})
+
+    def test_external_account_tags_requires_existing_account(self):
+        response = self.client.post(
+            '/api/external/accounts/tags',
+            headers={'X-API-Key': 'test-external-key'},
+            json={
+                'email': 'missing@outlook.com',
+                'tag_name': 'chatgpt',
+            }
+        )
+
+        self.assertEqual(response.status_code, 404)
+        payload = response.get_json()
+        self.assertFalse(payload['success'])
+        self.assertIn('missing@outlook.com', payload['missing'])
+
     def test_external_emails_requires_api_key(self):
         response = self.client.get('/api/external/emails?email=user@outlook.com&folder=inbox')
 

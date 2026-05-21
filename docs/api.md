@@ -33,6 +33,8 @@
 | 方法 | 路径 | 鉴权 | 返回类型 | 说明 |
 | --- | --- | --- | --- | --- |
 | GET | `/api/external/accounts` | API Key | JSON | 获取普通邮箱账号列表 |
+| GET | `/api/external/tags` | API Key | JSON | 获取普通账号标签列表 |
+| POST | `/api/external/accounts/tags` | API Key | JSON | 给普通邮箱账号添加或移除标签 |
 | POST | `/api/external/accounts/import` | API Key | JSON | 导入普通邮箱账号 |
 | GET | `/api/external/emails` | API Key | JSON | 获取指定邮箱邮件列表 |
 
@@ -339,6 +341,77 @@ curl -H "X-API-Key: your-api-key" \
 - 该接口只返回普通邮箱账号，不包含临时邮箱列表
 - 已隐藏密码、Refresh Token、IMAP 密码等敏感字段
 - 如需拉取某个邮箱的邮件列表，再调用 `/api/external/emails`
+
+### GET `/api/external/tags`
+
+通过 API Key 获取普通邮箱账号标签列表，适合外部系统先查询标签 ID，再用 `tag_ids` 过滤账号列表。
+
+#### 请求示例
+
+```bash
+curl -H "X-API-Key: your-api-key" \
+  "http://localhost:5000/api/external/tags"
+```
+
+#### 成功响应示例
+
+```json
+{
+  "success": true,
+  "tags": [
+    {
+      "id": 1,
+      "name": "chatgpt",
+      "color": "#10a37f",
+      "created_at": "2026-04-09 14:00:00"
+    }
+  ]
+}
+```
+
+### POST `/api/external/accounts/tags`
+
+通过 API Key 给普通邮箱账号添加或移除标签，不需要登录 Web 界面，也不需要 CSRF Token。外部注册系统可在账号注册成功后，把邮箱标记为 `chatgpt`，后续拉取账号列表时再根据返回的 `tags` 字段排除已使用邮箱。
+
+#### JSON 参数
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `email` / `emails` | string/array | 否 | 按邮箱处理账号；字符串支持换行或逗号分隔 |
+| `account_id` / `account_ids` | int/array | 否 | 按账号 ID 处理账号 |
+| `tag_name` / `name` | string | 否 | 标签名称；标签不存在时会自动创建 |
+| `tag_id` | int | 否 | 已存在的标签 ID；传了 `tag_id` 时优先使用它 |
+| `color` | string | 否 | 自动创建标签时使用的颜色，默认 `#1a1a1a` |
+| `action` | string | 否 | `add` 或 `remove`，默认 `add` |
+
+`email` / `emails` 和 `account_id` / `account_ids` 至少传一种；`tag_name` / `name` 和 `tag_id` 至少传一种。
+
+#### 请求示例
+
+```bash
+curl -X POST \
+  -H "X-API-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@outlook.com",
+    "tag_name": "chatgpt",
+    "color": "#10a37f"
+  }' \
+  "http://localhost:5000/api/external/accounts/tags"
+```
+
+#### 成功响应示例
+
+```json
+{
+  "success": true,
+  "tag_id": 1,
+  "action": "add",
+  "processed_count": 1,
+  "account_ids": [12],
+  "missing": []
+}
+```
 
 ### POST `/api/external/accounts/import`
 
