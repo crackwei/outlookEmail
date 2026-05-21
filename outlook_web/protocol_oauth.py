@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import html
 import hashlib
+import json
 import re
 import secrets
 from dataclasses import dataclass
@@ -128,29 +129,80 @@ def extract_javascript_string(html_text: str, key: str) -> str:
     return ""
 
 
+def extract_login_config(html_text: str) -> Dict[str, object]:
+    decoder = json.JSONDecoder()
+    for pattern in (r"\$Config\s*=\s*", r"\bConfig\s*=\s*"):
+        for match in re.finditer(pattern, html_text or "", flags=re.IGNORECASE):
+            try:
+                payload, _ = decoder.raw_decode((html_text or "")[match.end():])
+            except ValueError:
+                continue
+            if isinstance(payload, dict):
+                return payload
+    return {}
+
+
+def get_config_string(config: Dict[str, object], key: str) -> str:
+    value = config.get(key)
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return ""
+    return str(value)
+
+
 def extract_login_config_inputs(html_text: str) -> Dict[str, str]:
     inputs: Dict[str, str] = {}
+    config = extract_login_config(html_text)
+    post_params = config.get("oPostParams")
+    if isinstance(post_params, dict):
+        for key, value in post_params.items():
+            if value is not None and not isinstance(value, (dict, list)):
+                inputs[str(key)] = str(value)
 
-    sft_tag = extract_javascript_string(html_text, "sFTTag")
+    sft_tag = get_config_string(config, "sFTTag") or extract_javascript_string(html_text, "sFTTag")
     if sft_tag:
         nested_parser = LoginFormParser()
         nested_parser.feed(sft_tag)
         inputs.update(nested_parser.inputs)
 
-    flow_token = extract_javascript_string(html_text, "sFT")
-    flow_token_name = extract_javascript_string(html_text, "sFTName") or "flowToken"
+    flow_token = get_config_string(config, "sFT") or extract_javascript_string(html_text, "sFT")
+    flow_token_name = get_config_string(config, "sFTName") or extract_javascript_string(html_text, "sFTName") or "flowToken"
     if flow_token and flow_token_name:
         inputs.setdefault(flow_token_name, flow_token)
         if flow_token_name == "flowToken":
             inputs.setdefault("flowToken", flow_token)
 
     for js_key, input_name in (
+        ("flowToken", "flowToken"),
+        ("PPFT", "PPFT"),
+        ("ctx", "ctx"),
         ("sCtx", "ctx"),
         ("canary", "canary"),
         ("apiCanary", "apiCanary"),
         ("hpgrequestid", "hpgrequestid"),
+        ("i13", "i13"),
+        ("login", "login"),
+        ("loginfmt", "loginfmt"),
+        ("type", "type"),
+        ("LoginOptions", "LoginOptions"),
+        ("lrt", "lrt"),
+        ("lrtPartition", "lrtPartition"),
+        ("hisRegion", "hisRegion"),
+        ("hisScaleUnit", "hisScaleUnit"),
+        ("passwd", "passwd"),
+        ("ps", "ps"),
+        ("PPSX", "PPSX"),
+        ("NewUser", "NewUser"),
+        ("FoundMSAs", "FoundMSAs"),
+        ("fspost", "fspost"),
+        ("i21", "i21"),
+        ("CookieDisclosure", "CookieDisclosure"),
+        ("IsFidoSupported", "IsFidoSupported"),
+        ("isSignupPost", "isSignupPost"),
+        ("i19", "i19"),
     ):
-        value = extract_javascript_string(html_text, js_key)
+        value = get_config_string(config, js_key) or extract_javascript_string(html_text, js_key)
         if value:
             inputs.setdefault(input_name, value)
 
@@ -158,8 +210,9 @@ def extract_login_config_inputs(html_text: str) -> Dict[str, str]:
 
 
 def extract_login_config_action(html_text: str) -> str:
+    config = extract_login_config(html_text)
     for key in ("urlPost", "urlPostAad", "urlPostMsa"):
-        action = extract_javascript_string(html_text, key)
+        action = get_config_string(config, key) or extract_javascript_string(html_text, key)
         if action:
             return action
     return ""
@@ -197,6 +250,42 @@ def extract_html_redirect_url(html_text: str) -> str:
         return extract_login_config_action(html_text)
 
     return ""
+
+
+def extract_meta_content(html_text: str, name: str) -> str:
+    name_pattern = re.escape(name)
+    match = re.search(
+        rf'<meta[^>]+name=["\']{name_pattern}["\'][^>]+content=["\']([^"\']*)["\']',
+        html_text or "",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return ""
+    return html.unescape(match.group(1)).strip()
+
+
+def is_login_auto_post_interstitial(html_text: str) -> bool:
+    page_id = extract_meta_content(html_text, "PageID").lower()
+    if page_id in {"bssointerrupt"}:
+        return True
+
+    has_post_params = "oPostParams" in (html_text or "")
+    has_action = bool(extract_login_config_action(html_text))
+    has_flow_token = bool(extract_javascript_string(html_text, "flowToken"))
+    return has_post_params and has_action and has_flow_token and "ConvergedSignIn" not in (html_text or "")
+
+
+def extract_microsoft_error(html_text: str) -> str:
+    config = extract_login_config(html_text)
+    service_message = get_config_string(config, "strServiceExceptionMessage") or extract_javascript_string(html_text, "strServiceExceptionMessage")
+    main_message = get_config_string(config, "strMainMessage") or extract_javascript_string(html_text, "strMainMessage")
+    additional_message = get_config_string(config, "strAdditionalMessage") or extract_javascript_string(html_text, "strAdditionalMessage")
+    error_code = get_config_string(config, "iErrorCode") or extract_javascript_string(html_text, "iErrorCode")
+
+    parts = [part for part in (service_message, main_message, additional_message) if part]
+    if not parts and error_code:
+        parts.append(f"Microsoft 登录错误代码 {error_code}")
+    return "；".join(parts)
 
 
 def parse_login_form(html: str) -> Tuple[Dict[str, str], str]:
@@ -329,6 +418,44 @@ class OutlookPasswordOAuthClient:
             )
         return current_response
 
+    def _follow_login_interstitials(self, response: requests.Response, email_addr: str) -> requests.Response:
+        current_response = response
+        for _ in range(4):
+            if not is_login_auto_post_interstitial(current_response.text):
+                followed_response = self._follow_html_redirects(current_response)
+                if followed_response is current_response:
+                    return current_response
+                current_response = followed_response
+                continue
+
+            interstitial_inputs, interstitial_action = parse_login_form(current_response.text)
+            if (
+                (not interstitial_inputs.get("flowToken") and not interstitial_inputs.get("PPFT"))
+                or not interstitial_action
+            ):
+                return current_response
+
+            interstitial_payload = self._build_login_payload(email_addr, "", interstitial_inputs)
+            current_response = self.session.post(
+                self._absolute_action_url(interstitial_action),
+                data=interstitial_payload,
+                timeout=self.timeout,
+                allow_redirects=False,
+            )
+            if current_response.status_code in (301, 302, 303, 307, 308):
+                location = current_response.headers.get("Location", "")
+                if location:
+                    absolute_location = urljoin(current_response.url, location)
+                    current_response = self.session.post(
+                        absolute_location,
+                        data=interstitial_payload,
+                        timeout=self.timeout,
+                        allow_redirects=False,
+                    )
+            current_response = self._follow_html_redirects(current_response)
+
+        return current_response
+
     def _build_login_payload(self, email_addr: str, password: str, form_inputs: Dict[str, str]) -> Dict[str, str]:
         payload = dict(form_inputs or {})
         payload.update({
@@ -412,11 +539,18 @@ class OutlookPasswordOAuthClient:
         )
         if email_response.status_code != 200:
             return False, f"提交邮箱失败: HTTP {email_response.status_code}"
+        email_response = self._follow_login_interstitials(email_response, email_addr)
 
         password_inputs, password_action = parse_login_form(email_response.text)
         if not password_inputs.get("flowToken") and not password_inputs.get("PPFT"):
+            microsoft_error = extract_microsoft_error(email_response.text)
+            if microsoft_error:
+                return False, f"密码页返回 Microsoft 错误: {microsoft_error}"
             return False, "密码页缺少登录表单 token"
         if not password_action:
+            microsoft_error = extract_microsoft_error(email_response.text)
+            if microsoft_error:
+                return False, f"密码页返回 Microsoft 错误: {microsoft_error}"
             return False, "密码页缺少登录表单地址"
 
         password_payload = self._build_login_payload(email_addr, password, password_inputs)
