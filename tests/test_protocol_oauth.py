@@ -254,6 +254,76 @@ class ProtocolOAuthParsingTests(unittest.TestCase):
         self.assertFalse(success)
         self.assertIn('AADSTS50076', message)
 
+    def test_extract_code_from_redirects_posts_auto_post_page(self):
+        class FakeResponse:
+            def __init__(self, text, url='https://login.microsoftonline.com/common/login', status_code=200):
+                self.text = text
+                self.url = url
+                self.status_code = status_code
+                self.headers = {}
+
+        class FakeSession:
+            def __init__(self):
+                self.headers = {}
+                self.proxies = {}
+                self.posts = []
+                self.gets = []
+
+            def post(self, url, data=None, timeout=None, allow_redirects=None):
+                self.posts.append({
+                    'url': url,
+                    'data': data or {},
+                    'allow_redirects': allow_redirects,
+                })
+                return FakeResponse(r'''
+                <html>
+                  <meta name="PageID" content="ConvergedSignIn" />
+                  <script>
+                    var $Config = {
+                      "sFT": "password-token",
+                      "sFTName": "flowToken",
+                      "urlPost": "https:\/\/login.microsoftonline.com\/common\/login"
+                    };
+                  </script>
+                </html>
+                ''')
+
+            def get(self, url, timeout=None, allow_redirects=None):
+                self.gets.append(url)
+                raise AssertionError('auto-post page must not be followed with GET')
+
+        auto_post_page = r'''
+        <html>
+          <head><title>正在重定向</title></head>
+          <meta name="PageID" content="BssoInterrupt" />
+          <script>
+            var $Config = {
+              "oPostParams": {
+                "flowToken": "post-token",
+                "ctx": "ctx-value"
+              },
+              "urlPost": "\/common\/login?client-request-id=abc\u0026sso_reload=True"
+            };
+          </script>
+        </html>
+        '''
+        fake_session = FakeSession()
+        client = OutlookPasswordOAuthClient(
+            'client-id',
+            'http://localhost:8080',
+            ['offline_access'],
+            session=fake_session,
+        )
+
+        success, message = client._extract_code_from_redirects(FakeResponse(auto_post_page))
+
+        self.assertFalse(success)
+        self.assertIn('仍停留', message)
+        self.assertEqual(len(fake_session.posts), 1)
+        self.assertEqual(fake_session.posts[0]['allow_redirects'], False)
+        self.assertEqual(fake_session.posts[0]['data']['flowToken'], 'post-token')
+        self.assertEqual(fake_session.gets, [])
+
 
 if __name__ == '__main__':
     unittest.main()

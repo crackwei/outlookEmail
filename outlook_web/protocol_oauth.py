@@ -556,6 +556,17 @@ class OutlookPasswordOAuthClient:
             if code_success or is_redirect_match(current_response.url, self.redirect_uri):
                 return code_success, code_or_error
 
+            if is_login_auto_post_interstitial(current_response.text):
+                interstitial_inputs, interstitial_action = parse_login_form(current_response.text)
+                if interstitial_inputs and interstitial_action:
+                    current_response = self.session.post(
+                        self._absolute_action_url(interstitial_action),
+                        data=interstitial_inputs,
+                        timeout=self.timeout,
+                        allow_redirects=False,
+                    )
+                    continue
+
             html_redirect_url = extract_html_redirect_url(current_response.text)
             if html_redirect_url:
                 current_response = self.session.get(
