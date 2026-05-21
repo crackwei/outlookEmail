@@ -1388,6 +1388,10 @@ def api_external_get_emails_v2():
     subject_contains = get_query_arg_preserve_plus('subject_contains', '').strip().lower()
     from_contains = get_query_arg_preserve_plus('from_contains', '').strip().lower()
     keyword = get_query_arg_preserve_plus('keyword', '').strip().lower()
+    delete_after_fetch = (
+        parse_bool_flag(request.args.get('delete_after_fetch'), False)
+        or parse_bool_flag(request.args.get('delete_after_read'), False)
+    )
 
     if not email_addr:
         return jsonify({'success': False, 'error': '缺少 email 参数'}), 400
@@ -1417,6 +1421,13 @@ def api_external_get_emails_v2():
             result['fallback_email'] = account.get('fallback_email', '')
         if account.get('matched_alias'):
             result['matched_alias'] = account.get('matched_alias')
+        if delete_after_fetch:
+            result['delete_after_fetch'] = True
+            result['delete_result'] = delete_email_items_for_account(
+                account,
+                result.get('emails', []),
+                folder,
+            )
     return jsonify(result)
 
 
@@ -1456,13 +1467,13 @@ def email_matches_filters(account: Dict[str, Any], item: Dict[str, Any],
             return keyword in strip_html_content(body).lower()
         return False
 
-        detail = get_email_detail_graph(
-            account.get('client_id', ''),
-            account.get('refresh_token', ''),
-            str(item.get('id', '')),
-            proxy_url,
-            fallback_proxy_urls,
-        )
+    detail = get_email_detail_graph(
+        account.get('client_id', ''),
+        account.get('refresh_token', ''),
+        str(item.get('id', '')),
+        proxy_url,
+        fallback_proxy_urls,
+    )
     if not detail:
         return False
     body = str((detail.get('body') or {}).get('content', '') or '')

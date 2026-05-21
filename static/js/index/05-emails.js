@@ -605,7 +605,7 @@
                 return;
             }
 
-            await deleteEmails(Array.from(selectedEmailIds));
+            await deleteEmails(getSelectedEmailItems());
         }
 
         async function confirmDeleteCurrentEmail() {
@@ -616,11 +616,38 @@
                 return;
             }
 
-            await deleteEmails([currentEmailDetail.id]);
+            await deleteEmails([currentEmailDetail]);
         }
 
-        async function deleteEmails(ids) {
+        async function deleteEmails(items) {
             showToast('正在删除...', 'info');
+
+            const normalizedItems = (items || [])
+                .map(item => {
+                    if (!item) {
+                        return null;
+                    }
+                    if (typeof item === 'string') {
+                        return {
+                            id: item,
+                            folder: currentFolder || 'inbox',
+                            id_mode: ''
+                        };
+                    }
+                    if (!item.id) {
+                        return null;
+                    }
+                    return {
+                        id: String(item.id),
+                        folder: String(item.folder || currentFolder || 'inbox'),
+                        id_mode: String(item.id_mode || '')
+                    };
+                })
+                .filter(Boolean);
+
+            if (!normalizedItems.length) {
+                return;
+            }
 
             try {
                 const response = await fetch('/api/emails/delete', {
@@ -628,7 +655,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         email: currentAccount,
-                        ids: ids
+                        items: normalizedItems
                     })
                 });
 
@@ -638,7 +665,7 @@
                     showToast(`成功删除 ${result.success_count} 封邮件`);
 
                     // Remove deleted emails from currentEmails
-                    const deletedIds = new Set(ids); // Ideally result should return what was deleted
+                    const deletedIds = new Set(result.deleted_ids || normalizedItems.map(item => item.id));
                     currentEmails = currentEmails.filter(e => !deletedIds.has(e.id));
                     selectedEmailIds.clear();
                     if (currentEmailId && deletedIds.has(currentEmailId)) {

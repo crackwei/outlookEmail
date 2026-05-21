@@ -93,3 +93,60 @@
             </div>
         </div>
     </div>
+
+    <!-- 批量账号密码换 Token 模态框 -->
+    <div class="modal" id="batchOutlookTokenModal" onmousedown="if(event.target === this) hideBatchOutlookTokenImportModal()">
+        <div class="modal-content" style="width: min(780px, calc(100vw - 32px));">
+            <div class="modal-header">
+                <h3>批量换取 Outlook Token</h3>
+                <button class="modal-close" onclick="hideBatchOutlookTokenImportModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="settings-panel" style="margin-bottom: 16px;">
+                    <div class="settings-grid">
+                        <div class="form-group">
+                            <label class="form-label">目标分组</label>
+                            <select class="form-select" id="batchTokenGroupSelect"></select>
+                        </div>
+                        <div class="form-group" style="display: flex; align-items: end;">
+                            <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: #4b5563; margin-bottom: 8px;">
+                                <input type="checkbox" id="batchTokenForwardEnabled">
+                                <span>入库后启用邮件转发</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">账号密码</label>
+                    <textarea class="form-textarea" id="batchTokenAccountInput"
+                        placeholder="user@outlook.com:password&#10;user@hotmail.com---password"
+                        style="height: 150px;"></textarea>
+                    <div class="form-hint">每行一个账号，支持 <code>用户名:密码</code>、<code>用户名---密码</code>，也兼容 <code>用户名----密码</code>。</div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">代理列表</label>
+                    <textarea class="form-textarea" id="batchTokenProxyInput"
+                        placeholder="http://127.0.0.1:8080&#10;socks5://user:pass@host:port&#10;direct"
+                        style="height: 110px;"></textarea>
+                    <div class="form-hint">每行一个代理，账号会按顺序轮询使用；留空表示直连，填写 <code>direct</code> 或 <code>直连</code> 也表示直连。</div>
+                </div>
+
+                <div class="batch-token-result" id="batchTokenResult" style="display: none;">
+                    <div class="batch-token-result__summary" id="batchTokenResultSummary"></div>
+                    <div class="form-group" id="batchTokenFailedGroup" style="display: none;">
+                        <label class="form-label">换取失败账号密码</label>
+                        <textarea class="form-textarea" id="batchTokenFailedOutput" readonly style="height: 120px;"></textarea>
+                        <div class="form-hint">可复制后到“授权并保存 Outlook 账号”里逐个手动处理。</div>
+                    </div>
+                    <div class="batch-token-failure-list" id="batchTokenFailureList"></div>
+                    <div class="batch-token-invalid-list" id="batchTokenInvalidList"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="hideBatchOutlookTokenImportModal()">关闭</button>
+                <button class="btn btn-primary" id="batchTokenStartBtn" onclick="startBatchOutlookTokenImport()">开始换取并入库</button>
+            </div>
+        </div>
+    </div>

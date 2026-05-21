@@ -1,6 +1,9 @@
 # 多邮箱邮件管理工具
 
 一个面向多邮箱账号场景的邮件管理工具，支持通过 Outlook/Hotmail OAuth、Microsoft Graph API 和标准 IMAP 统一读取、管理和转发邮件，并提供 Web 界面用于分组管理、账号管理、邮件查看和对外 API 调用。当前支持 Outlook/Hotmail、Gmail、QQ、163、126、Yahoo、阿里邮箱以及自定义 IMAP 邮箱，同时集成 GPTMail、DuckMail、Cloudflare Temp Email 多提供商临时邮箱能力。
+
+完整接口说明见 [API 文档](docs/api.md)，包含对外简易 API、完整内部 API、账号导入、邮件读取、转发、临时邮箱和代理相关接口。
+
 ## 📦 快速开始
 ### 体验站点（可能非最新版本）
 https://aso.de5.net
@@ -157,6 +160,7 @@ services:
 - 📁 **分组管理** - 支持创建、编辑、删除邮箱分组，自定义分组颜色，支持分组级别代理设置
 - 🌐 **分组代理** - 每个分组可配置 HTTP/SOCKS5 代理
 - 📧 **多邮箱管理** - 批量导入和管理 Outlook/Hotmail OAuth / IMAP 邮箱账号
+- 🔑 **Outlook 批量换 Token** - Outlook 分组旁可直接导入 `用户名:密码` 或 `用户名---密码`，并配置代理池轮换换取 Refresh Token 后自动入库；失败结果会返回邮箱和密码，便于手动处理
 - 🪪 **别名管理** - 支持给单个邮箱配置多个别名邮箱，主邮箱和别名都可用于检索邮件和调用对外 API
 - 🔀 **别名高级用法** - 可将外部邮箱自动转发到本项目管理的邮箱 A，再把外部邮箱配置为 A 的别名，从而通过本项目统一读取邮件
 - 📬 **邮件查看** - Web 界面支持查看收件箱和垃圾邮件；API 支持 `inbox`、`junkemail`、`deleteditems`、`all`
@@ -304,6 +308,19 @@ user@outlook.com:password123:24d9a0ed-8787-4584-883c-2fd79308940a:0.AXEA...
 
 导入时会自动识别后两段的顺序：UUID 形态优先识别为 `client_id`；当不是标准 UUID 时，会按长度差异将较短的一段作为 `client_id`、较长的一段作为 `refresh_token`。
 
+#### Outlook/Hotmail 批量换取 Token 导入
+
+在 Outlook 类型分组旁点击批量换 Token 按钮，可直接粘贴账号密码并配置代理列表，系统会按账号顺序轮换代理，自动完成授权换取 Refresh Token 并写入账号库。
+
+支持的账号密码格式：
+
+```txt
+user@outlook.com:password123
+user@hotmail.com---password456
+```
+
+代理列表每行一个，支持 HTTP、HTTPS、SOCKS 代理；留空则直连。批量导入完成后会汇总成功、跳过和失败数量，并返回换取 Token 失败的邮箱、密码、代理和错误原因，便于继续使用「授权并保存 Outlook 账号」模块手动处理。
+
 #### 标准 IMAP 邮箱
 
 适用于 Gmail、QQ、163、126、Yahoo、阿里邮箱等：
@@ -408,6 +425,7 @@ user@example.com----app-password----imap.example.com----993
 - 支持按主题、发件人、关键词筛选列表
 - 支持特殊字符别名，例如 `user+alias@example.com`
 - 查询 `@gmail.com` / `@googlemail.com` 地址时，原后缀未命中会自动回退到另一个后缀
+- 可选 `delete_after_fetch=true`，删除本次响应中实际返回的邮件
 - 默认 `top=1`
 
 **配置步骤：**
@@ -426,6 +444,9 @@ curl -H "X-API-Key: your-api-key" \
 
 curl -H "X-API-Key: your-api-key" \
   "http://localhost:5000/api/external/emails?email=user%2Balias%40example.com"
+
+curl -H "X-API-Key: your-api-key" \
+  "http://localhost:5000/api/external/emails?email=user@outlook.com&folder=inbox&top=1&subject_contains=verify&delete_after_fetch=true"
 
 curl -X POST \
   -H "X-API-Key: your-api-key" \

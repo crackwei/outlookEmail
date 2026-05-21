@@ -1909,9 +1909,18 @@ def api_get_refresh_status_list():
 def delete_emails_graph(client_id: str, refresh_token: str, message_ids: List[str], proxy_url: str = None,
                         fallback_proxy_urls: List[str] = None) -> Dict[str, Any]:
     """通过 Graph API 批量删除邮件（永久删除）"""
+    message_ids = [str(message_id or '').strip() for message_id in (message_ids or []) if str(message_id or '').strip()]
     access_token = get_access_token_graph(client_id, refresh_token, proxy_url, fallback_proxy_urls)
     if not access_token:
-        return {"success": False, "error": "获取 Access Token 失败"}
+        return {
+            "success": False,
+            "success_count": 0,
+            "failed_count": len(message_ids),
+            "updated_ids": [],
+            "deleted_ids": [],
+            "errors": ["获取 Access Token 失败"],
+            "error": "获取 Access Token 失败",
+        }
 
     headers = {
         'Authorization': f'Bearer {access_token}',
@@ -1927,6 +1936,7 @@ def delete_emails_graph(client_id: str, refresh_token: str, message_ids: List[st
     success_count = 0
     failed_count = 0
     errors = []
+    deleted_ids = []
 
     for i in range(0, len(message_ids), BATCH_SIZE):
         batch = message_ids[i:i + BATCH_SIZE]
@@ -1954,12 +1964,14 @@ def delete_emails_graph(client_id: str, refresh_token: str, message_ids: List[st
             if response.status_code == 200:
                 results = response.json().get("responses", [])
                 for res in results:
+                    msg_id = batch[int(res['id'])]
                     if res.get("status") in [200, 204]:
                         success_count += 1
+                        deleted_ids.append(msg_id)
                     else:
                         failed_count += 1
                         # 记录具体错误
-                        errors.append(f"Msg ID: {batch[int(res['id'])]}, Status: {res.get('status')}")
+                        errors.append(f"Msg ID: {msg_id}, Status: {res.get('status')}")
             else:
                 failed_count += len(batch)
                 errors.append(f"Batch request failed: {response.text}")
@@ -1972,37 +1984,51 @@ def delete_emails_graph(client_id: str, refresh_token: str, message_ids: List[st
         "success": failed_count == 0,
         "success_count": success_count,
         "failed_count": failed_count,
+        "updated_ids": deleted_ids,
+        "deleted_ids": deleted_ids,
         "errors": errors
     }
 
 def delete_emails_imap(email_addr: str, client_id: str, refresh_token: str, message_ids: List[str], server: str,
-                       proxy_url: str = None, fallback_proxy_urls: List[str] = None) -> Dict[str, Any]:
+                       proxy_url: str = None, fallback_proxy_urls: List[str] = None,
+                       fallback_folder: str = 'inbox') -> Dict[str, Any]:
     """通过 IMAP 删除邮件（永久删除）"""
-    access_token = get_access_token_graph(client_id, refresh_token, proxy_url, fallback_proxy_urls)
+    items = normalize_email_action_items(message_ids, fallback_folder)
+    access_token = get_access_token_imap(client_id, refresh_token, proxy_url, fallback_proxy_urls)
     if not access_token:
-        return {"success": False, "error": "获取 Access Token 失败"}
-        
+        return {
+            "success": False,
+            "success_count": 0,
+            "failed_count": len(items),
+            "updated_ids": [],
+            "deleted_ids": [],
+            "errors": ["获取 Access Token 失败"],
+            "error": "获取 Access Token 失败",
+        }
+
+    imap = None
     try:
-        # 生成 OAuth2 认证字符串
         auth_string = 'user=%s\x01auth=Bearer %s\x01\x01' % (email_addr, access_token)
-        
-        # 连接 IMAP
         with proxy_socket_context(proxy_url):
             imap = imaplib.IMAP4_SSL(server, IMAP_PORT, timeout=IMAP_TIMEOUT)
         imap.authenticate('XOAUTH2', lambda x: auth_string.encode('utf-8'))
-        
-        # 选择文件夹
-        imap.select('INBOX')
-        
-        # IMAP 删除需要 UID。如果我们没有 UID，这很难。
-        # 鉴于我们只实现了 Graph 删除，并且 fallback 到 IMAP 比较复杂，
-        # 这里暂时返回不支持，或仅做简单的尝试（如果 ID 恰好是 UID）
-        # 但通常 Graph ID 不是 UID。
-        
-        return {"success": False, "error": "IMAP 删除暂不支持 (ID 格式不兼容)"}
-        
+        return delete_email_items_imap(imap, items, 'outlook', default_mode='sequence')
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {
+            "success": False,
+            "success_count": 0,
+            "failed_count": len(items),
+            "updated_ids": [],
+            "deleted_ids": [],
+            "errors": [sanitize_error_details(str(e))],
+            "error": sanitize_error_details(str(e)),
+        }
+    finally:
+        if imap:
+            try:
+                imap.logout()
+            except Exception:
+                pass
 
 
 VALID_MAIL_FOLDERS = {'inbox', 'junkemail', 'deleteditems', 'all'}
@@ -2052,8 +2078,180 @@ def normalize_email_action_items(raw_items: Any, fallback_folder: str = 'inbox')
     return normalized_items
 
 
+def expunge_imap_mailbox(mail) -> tuple[bool, Dict[str, Any]]:
+    try:
+        status, data = mail.expunge()
+        attempt = {
+            'status': str(status),
+            'response': sanitize_error_details(str(data or ''))[:200],
+        }
+        return status == 'OK', attempt
+    except Exception as exc:
+        return False, {
+            'status': type(exc).__name__,
+            'response': sanitize_error_details(str(exc))[:200],
+        }
+
+
+def delete_email_items_imap(mail, items: List[Dict[str, Any]], provider: str,
+                            default_mode: str = 'uid') -> Dict[str, Any]:
+    success_count = 0
+    deleted_ids: List[str] = []
+    errors: List[Any] = []
+    grouped_items: Dict[str, List[Dict[str, str]]] = {}
+
+    for item in items or []:
+        message_id = str(item.get('id', '') or '').strip()
+        folder = normalize_folder_name(item.get('folder', 'inbox'))
+        if not message_id:
+            errors.append({
+                'id': '',
+                'error': build_error_payload(
+                    'EMAIL_DELETE_INVALID',
+                    'message_id 不能为空',
+                    'ValidationError',
+                    400,
+                    item
+                )
+            })
+            continue
+        grouped_items.setdefault(folder, []).append({
+            'id': message_id,
+            'folder': folder,
+            'id_mode': str(item.get('id_mode', '') or '').strip().lower(),
+        })
+
+    for folder, folder_items in grouped_items.items():
+        selected_folder, folder_diagnostics = resolve_imap_folder(mail, provider, folder, readonly=False)
+        if not selected_folder:
+            folder_error = build_error_payload(
+                'IMAP_FOLDER_NOT_FOUND',
+                'IMAP 文件夹不存在或无权访问',
+                'IMAPFolderError',
+                400,
+                {
+                    'provider': provider,
+                    'folder': folder,
+                    **folder_diagnostics,
+                }
+            )
+            errors.extend({'id': item['id'], 'error': folder_error} for item in folder_items)
+            continue
+
+        marked_ids: List[str] = []
+        for item in folder_items:
+            preferred_mode = item.get('id_mode') or default_mode
+            success, _used_mode, attempts = store_imap_message_flags(
+                mail,
+                item['id'],
+                action='+FLAGS.SILENT',
+                flags=r'(\Deleted)',
+                preferred_mode=preferred_mode
+            )
+            if success:
+                marked_ids.append(item['id'])
+                continue
+
+            errors.append({
+                'id': item['id'],
+                'error': build_error_payload(
+                    'EMAIL_DELETE_STORE_FAILED',
+                    '标记邮件删除失败',
+                    'IMAPStoreError',
+                    502,
+                    {
+                        'provider': provider,
+                        'folder': selected_folder,
+                        'message_id': item['id'],
+                        'store_attempts': attempts[:10],
+                    }
+                )
+            })
+
+        if not marked_ids:
+            continue
+
+        expunged, expunge_attempt = expunge_imap_mailbox(mail)
+        if expunged:
+            success_count += len(marked_ids)
+            deleted_ids.extend(marked_ids)
+            continue
+
+        errors.extend({
+            'id': message_id,
+            'error': build_error_payload(
+                'EMAIL_DELETE_EXPUNGE_FAILED',
+                '删除邮件失败',
+                'IMAPExpungeError',
+                502,
+                {
+                    'provider': provider,
+                    'folder': selected_folder,
+                    'message_id': message_id,
+                    'expunge_attempt': expunge_attempt,
+                }
+            )
+        } for message_id in marked_ids)
+
+    total_count = sum(len(group) for group in grouped_items.values()) + sum(1 for item in errors if not item.get('id'))
+    failed_count = total_count - success_count
+    return {
+        'success': failed_count == 0,
+        'success_count': success_count,
+        'failed_count': failed_count,
+        'updated_ids': deleted_ids,
+        'deleted_ids': deleted_ids,
+        'errors': errors,
+    }
+
+
+def delete_emails_imap_generic_result(email_addr: str, imap_password: str, imap_host: str,
+                                      items: List[Dict[str, Any]], imap_port: int = 993,
+                                      provider: str = 'custom', proxy_url: str = '') -> Dict[str, Any]:
+    normalized_items = normalize_email_action_items(items, 'inbox')
+    mail = None
+    try:
+        mail = create_imap_connection(imap_host, imap_port, proxy_url)
+        try:
+            mail.login(email_addr, imap_password)
+        except imaplib.IMAP4.error as exc:
+            return {
+                'success': False,
+                'success_count': 0,
+                'failed_count': len(normalized_items),
+                'updated_ids': [],
+                'deleted_ids': [],
+                'errors': [build_error_payload(
+                    'IMAP_AUTH_FAILED',
+                    normalize_imap_auth_error(provider, imap_host, str(exc)),
+                    'IMAPAuthError',
+                    401,
+                    ''
+                )],
+            }
+
+        send_imap_id(mail, provider, imap_host)
+        return delete_email_items_imap(mail, normalized_items, provider, default_mode='uid')
+    except Exception as exc:
+        return {
+            'success': False,
+            'success_count': 0,
+            'failed_count': len(normalized_items),
+            'updated_ids': [],
+            'deleted_ids': [],
+            'errors': [build_error_payload('IMAP_CONNECT_FAILED', sanitize_error_details(str(exc)) or 'IMAP 连接失败', 'IMAPConnectError', 502, '')],
+        }
+    finally:
+        if mail:
+            try:
+                mail.logout()
+            except Exception:
+                pass
+
+
 def merge_email_action_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     merged_updated_ids: List[str] = []
+    merged_deleted_ids: List[str] = []
     merged_errors: List[Any] = []
     success_count = 0
     failed_count = 0
@@ -2062,19 +2260,101 @@ def merge_email_action_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
         success_count += int(result.get('success_count', 0) or 0)
         failed_count += int(result.get('failed_count', 0) or 0)
         merged_updated_ids.extend([str(item) for item in (result.get('updated_ids') or []) if str(item)])
+        merged_deleted_ids.extend([str(item) for item in (result.get('deleted_ids') or []) if str(item)])
         merged_errors.extend(result.get('errors') or [])
 
     deduped_updated_ids = list(dict.fromkeys(merged_updated_ids))
+    deduped_deleted_ids = list(dict.fromkeys(merged_deleted_ids))
     merged_result = {
         'success': failed_count == 0,
         'success_count': success_count,
         'failed_count': failed_count,
         'updated_ids': deduped_updated_ids,
+        'deleted_ids': deduped_deleted_ids,
         'errors': merged_errors,
     }
     if merged_errors:
         merged_result['error'] = merged_errors[0]
     return merged_result
+
+
+def delete_email_items_for_account(account: Dict[str, Any], raw_items: Any,
+                                   fallback_folder: str = 'inbox',
+                                   method: str = 'graph') -> Dict[str, Any]:
+    items = normalize_email_action_items(raw_items, fallback_folder)
+    if not items:
+        return {
+            'success': True,
+            'success_count': 0,
+            'failed_count': 0,
+            'updated_ids': [],
+            'deleted_ids': [],
+            'errors': [],
+        }
+
+    proxy_url = get_account_proxy_url(account)
+    fallback_proxy_urls = get_account_proxy_failover_urls(account)
+
+    if account.get('account_type') == 'imap':
+        return delete_emails_imap_generic_result(
+            account['email'],
+            account.get('imap_password', ''),
+            account.get('imap_host', ''),
+            items,
+            account.get('imap_port', 993),
+            account.get('provider', 'custom'),
+            proxy_url
+        )
+
+    graph_items = []
+    imap_items = []
+    normalized_method = str(method or 'graph').strip().lower()
+    for item in items:
+        id_mode = str(item.get('id_mode') or '').strip().lower()
+        if id_mode == 'graph':
+            graph_items.append(item)
+        elif id_mode in {'uid', 'sequence'}:
+            imap_items.append(item)
+        elif normalized_method == 'imap':
+            imap_items.append(item)
+        else:
+            graph_items.append(item)
+
+    results = []
+    if graph_items:
+        results.append(delete_emails_graph(
+            account['client_id'],
+            account['refresh_token'],
+            [item['id'] for item in graph_items],
+            proxy_url,
+            fallback_proxy_urls,
+        ))
+
+    if imap_items:
+        imap_result = delete_emails_imap(
+            account['email'],
+            account['client_id'],
+            account['refresh_token'],
+            imap_items,
+            IMAP_SERVER_NEW,
+            proxy_url,
+            fallback_proxy_urls,
+            fallback_folder,
+        )
+        if not imap_result.get('success') and imap_result.get('success_count', 0) == 0:
+            imap_result = delete_emails_imap(
+                account['email'],
+                account['client_id'],
+                account['refresh_token'],
+                imap_items,
+                IMAP_SERVER_OLD,
+                proxy_url,
+                fallback_proxy_urls,
+                fallback_folder,
+            )
+        results.append(imap_result)
+
+    return merge_email_action_results(results)
 
 
 def normalize_email_list_item(item: Dict[str, Any], folder: str) -> Dict[str, Any]:
@@ -2481,61 +2761,22 @@ def api_mark_emails_read():
 @login_required
 def api_delete_emails():
     """批量删除邮件（永久删除）"""
-    data = request.json
-    email_addr = data.get('email', '')
-    message_ids = data.get('ids', [])
-    
-    if not email_addr or not message_ids:
+    data = request.json or {}
+    email_addr = str(data.get('email', '') or '').strip()
+    fallback_folder = normalize_folder_name(data.get('folder', 'inbox'))
+    method = str(data.get('method') or 'graph').strip().lower()
+    raw_items = data.get('items')
+    if raw_items is None:
+        raw_items = data.get('ids', [])
+
+    if not email_addr or not raw_items:
         return jsonify({'success': False, 'error': '参数不完整'})
 
     account = get_account_by_email(email_addr)
     if not account:
         return jsonify({'success': False, 'error': '账号不存在'})
 
-    proxy_url = get_account_proxy_url(account)
-    fallback_proxy_urls = get_account_proxy_failover_urls(account)
-
-    # 1. 优先尝试 Graph API
-    if account.get('account_type') == 'imap':
-        return jsonify({'success': False, 'error': 'IMAP 账号暂不支持批量删除邮件'})
-
-    graph_res = delete_emails_graph(account['client_id'], account['refresh_token'], message_ids, proxy_url, fallback_proxy_urls)
-    if graph_res['success']:
-        return jsonify(graph_res)
-
-    # 如果是代理错误，不再回退 IMAP
-    graph_error = graph_res.get('error', '')
-    if isinstance(graph_error, str) and 'ProxyError' in graph_error:
-        return jsonify(graph_res)
-    
-    # 2. 尝试 IMAP 回退（新服务器）
-    imap_res = delete_emails_imap(
-        account['email'],
-        account['client_id'],
-        account['refresh_token'],
-        message_ids,
-        IMAP_SERVER_NEW,
-        proxy_url,
-        fallback_proxy_urls,
-    )
-    if imap_res['success']:
-        return jsonify(imap_res)
-
-    # 3. 尝试 IMAP 回退（旧服务器）
-    imap_old_res = delete_emails_imap(
-        account['email'],
-        account['client_id'],
-        account['refresh_token'],
-        message_ids,
-        IMAP_SERVER_OLD,
-        proxy_url,
-        fallback_proxy_urls,
-    )
-    if imap_old_res['success']:
-        return jsonify(imap_old_res)
-
-    # 所有方式均失败，返回 Graph API 的错误
-    return jsonify(graph_res)
+    return jsonify(delete_email_items_for_account(account, raw_items, fallback_folder, method))
 
 
 

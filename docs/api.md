@@ -54,6 +54,7 @@
 | GET | `/api/accounts/search` | Session | JSON | 搜索账号 |
 | GET | `/api/accounts/<account_id>` | Session | JSON | 获取单个账号 |
 | POST | `/api/accounts` | Session + CSRF | JSON | 批量导入账号 |
+| POST | `/api/accounts/import-outlook-passwords` | Session + CSRF | JSON | Outlook 账号密码批量换 Token 并入库 |
 | PUT | `/api/accounts/<account_id>` | Session + CSRF | JSON | 更新账号 |
 | DELETE | `/api/accounts/<account_id>` | Session + CSRF | JSON | 按 ID 删除账号 |
 | DELETE | `/api/accounts/email/<email_addr>` | Session + CSRF | JSON | 按邮箱删除账号 |
@@ -429,6 +430,7 @@ curl -X POST \
 | `subject_contains` | string | 否 | 仅保留主题中包含该关键字的邮件 |
 | `from_contains` | string | 否 | 仅保留发件人中包含该关键字的邮件 |
 | `keyword` | string | 否 | 在主题、预览、正文中做进一步关键字过滤 |
+| `delete_after_fetch` | bool | 否 | `true` 时删除本次响应中实际返回的邮件；默认 `false` |
 
 #### 请求示例
 
@@ -444,6 +446,9 @@ curl -H "X-API-Key: your-api-key" \
 
 curl -H "X-API-Key: your-api-key" \
   "http://localhost:5000/api/external/emails?email=user%2Balias%40example.com"
+
+curl -H "X-API-Key: your-api-key" \
+  "http://localhost:5000/api/external/emails?email=user@outlook.com&folder=inbox&top=1&subject_contains=verify&delete_after_fetch=true"
 ```
 
 #### 成功响应示例
@@ -472,6 +477,23 @@ curl -H "X-API-Key: your-api-key" \
   ]
 }
 ```
+
+开启 `delete_after_fetch=true` 时，响应会额外包含：
+
+```json
+{
+  "delete_after_fetch": true,
+  "delete_result": {
+    "success": true,
+    "success_count": 1,
+    "failed_count": 0,
+    "deleted_ids": ["AAMk..."],
+    "errors": []
+  }
+}
+```
+
+删除只作用于本次响应里的邮件；如果使用 `subject_contains`、`from_contains` 或 `keyword`，未命中过滤条件而未返回的邮件不会被删除。Graph 邮件通过 Graph 批量删除，IMAP 邮件通过 `\Deleted` 标记并 `EXPUNGE`。
 
 #### 聚合模式说明
 
@@ -640,6 +662,83 @@ curl -H "X-API-Key: your-api-key" \
   "account_format": "client_id_refresh_token",
   "provider": "outlook",
   "forward_enabled": false
+}
+```
+
+### POST `/api/accounts/import-outlook-passwords`
+
+使用 Outlook/Hotmail 邮箱账号密码批量换取 Refresh Token，并将成功账号写入普通邮箱分组。该接口复用界面里的“Outlook 批量换 Token”能力，适合将 `用户名:密码` 或 `用户名---密码` 文本直接导入。
+
+> 需要登录态和 CSRF Token。遇到验证码、MFA、账号风控或密码错误时不会中断整批任务，会在响应的 `failed_accounts` 中返回邮箱和密码，便于手动处理。
+
+#### 请求体
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `account_string` | string | 是 | 多行账号密码文本；也兼容字段名 `accounts_text` |
+| `group_id` | int | 否 | 目标普通邮箱分组，默认使用默认分组；不能导入临时邮箱分组 |
+| `proxy_list` | string | 否 | 代理列表，每行一个；也兼容 `proxy_text`、`proxy_urls`、`proxies` |
+| `forward_enabled` | bool | 否 | 导入成功后是否默认启用转发 |
+| `timeout` | int | 否 | 单账号换 Token 超时时间，单位秒，范围 `10` 到 `180` |
+| `sort_order` | int | 否 | 新账号排序值 |
+
+`proxies` 也可以传数组。代理会按有效账号顺序轮换使用；代理为空、`direct` 或 `直连` 时表示直连。
+
+#### 账号密码格式
+
+```txt
+user@outlook.com:password123
+user@hotmail.com---password456
+user@live.com----password789
+```
+
+#### 请求示例
+
+```json
+{
+  "account_string": "user@outlook.com:password123\nuser@hotmail.com---password456",
+  "group_id": 1,
+  "proxy_list": "http://127.0.0.1:7890\nsocks5://127.0.0.1:1080",
+  "forward_enabled": false,
+  "timeout": 45
+}
+```
+
+#### 响应重点字段
+
+| 字段 | 说明 |
+| --- | --- |
+| `processed_count` | 参与换 Token 的有效账号数量 |
+| `token_success_count` | 成功换取 Refresh Token 的账号数量 |
+| `added_count` | 成功写入数据库的账号数量 |
+| `skipped_count` | 因已存在等原因跳过入库的账号数量 |
+| `failed_count` | 换 Token 或入库失败的账号数量 |
+| `failed_accounts` | 失败账号列表，包含 `email`、`password`、`error`、`proxy` |
+| `invalid_count` | 输入格式无效的行数量 |
+| `invalid_lines` | 无效行列表，包含 `line`、`content`、`error` |
+| `proxy_count` | 本次解析到的代理数量 |
+
+#### 响应示例
+
+```json
+{
+  "success": true,
+  "processed_count": 2,
+  "token_success_count": 1,
+  "added_count": 1,
+  "skipped_count": 0,
+  "failed_count": 1,
+  "failed_accounts": [
+    {
+      "email": "user@hotmail.com",
+      "password": "password456",
+      "error": "需要验证码或额外验证",
+      "proxy": "socks5://127.0.0.1:1080"
+    }
+  ],
+  "invalid_count": 0,
+  "invalid_lines": [],
+  "proxy_count": 2
 }
 ```
 
@@ -1495,14 +1594,21 @@ ZIP 内文件名使用附件原始文件名；如果多个附件同名，会自�
 ```json
 {
   "email": "user@outlook.com",
-  "ids": ["AAMk...", "AAMk..."]
+  "items": [
+    {
+      "id": "AAMk...",
+      "folder": "inbox",
+      "id_mode": "graph"
+    }
+  ]
 }
 ```
 
 说明：
 
-- Outlook 账号会优先走 Graph API，失败后按逻辑回退 IMAP
-- IMAP 账号当前不支持批量删除
+- 兼容旧请求体 `ids: ["AAMk..."]`
+- Outlook Graph 邮件使用 Graph 批量删除
+- IMAP 邮件使用 `\Deleted` 标记并 `EXPUNGE`，建议传入列表返回的 `folder` 和 `id_mode`
 
 ## 临时邮箱
 
@@ -1515,13 +1621,13 @@ ZIP 内文件名使用附件原始文件名；如果多个附件同名，会自�
 | POST | `/api/temp-emails/batch-delete` | JSON: `temp_email_ids` | 批量删除临时邮箱 |
 | GET | `/api/duckmail/domains` | 无 | 获取 DuckMail 可用域名 |
 | GET | `/api/cloudflare/domains` | 无 | 获取 Cloudflare 可用域名 |
-| GET | `/api/cloudflare/messages` | Query: `limit?`、`offset?`、`address?` | 使用 Cloudflare 管理员接口查看当前 Worker 全部邮件，可选按收件地址过滤 |
+| GET | `/api/cloudflare/messages` | Query: `limit?`、`offset?`、`address?` | 通过 cf-mail `/api/external/messages` 查看当前 Worker 全部邮件，可选按收件地址过滤 |
 
 `/api/temp-emails/import` 的导入格式：
 
 - `provider=gptmail`: 每行一个邮箱
 - `provider=duckmail`: 每行 `邮箱----密码`
-- `provider=cloudflare`: 每行 `邮箱----JWT`
+- `provider=cloudflare`: 每行一个邮箱地址；兼容旧的 `邮箱----JWT` 格式但会忽略 JWT
 
 ### POST `/api/temp-emails/generate`
 
@@ -1561,7 +1667,7 @@ ZIP 内文件名使用附件原始文件名；如果多个附件同名，会自�
 
 ### GET `/api/cloudflare/messages`
 
-查看当前配置的 Cloudflare Temp Email Worker 全部邮件。该接口需要 Web 登录 session，不使用对外 API Key；它不同于普通邮箱的 `folder=all`，后者只聚合某个普通邮箱账号的收件箱和垃圾邮件。
+查看当前配置的 cf-mail Worker 全部邮件。该本地接口需要 Web 登录 session；服务端会使用设置中的 `cloudflare_api_key` 调用 cf-mail 的 `GET /api/external/messages`，不使用本系统“对外 API Key”。它不同于普通邮箱的 `folder=all`，后者只聚合某个普通邮箱账号的收件箱和垃圾邮件。
 
 #### 查询参数
 
@@ -1578,7 +1684,7 @@ ZIP 内文件名使用附件原始文件名；如果多个附件同名，会自�
 ```json
 {
   "success": true,
-  "method": "Cloudflare Admin",
+  "method": "cf-mail External API",
   "requested_email": "user@gmail.com",
   "queried_email": "user@googlemail.com",
   "fallback_used": true,
@@ -1649,7 +1755,8 @@ ZIP 内文件名使用附件原始文件名；如果多个附件同名，会自�
 | `duckmail_api_key` | DuckMail API Key |
 | `cloudflare_worker_domain` | Cloudflare Worker 域名 |
 | `cloudflare_email_domains` | Cloudflare 邮箱域名列表，逗号分隔字符串 |
-| `cloudflare_admin_password` | Cloudflare 管理密码 |
+| `cloudflare_api_key` | cf-mail API Key，用于调用 `/api/external/mailboxes` 和 `/api/external/messages` |
+| `cloudflare_admin_password` | 旧字段兼容别名，返回值等同于 `cloudflare_api_key` |
 | `app_timezone` | 当前系统时区，IANA 时区名，例如 `Asia/Shanghai` |
 | `show_account_created_at` | 是否在邮箱列表展示创建时间 |
 | `show_account_sort_order` | 是否在邮箱列表展示自定义排序值 |
@@ -1697,7 +1804,8 @@ ZIP 内文件名使用附件原始文件名；如果多个附件同名，会自�
 | `duckmail_api_key` | string | DuckMail API Key |
 | `cloudflare_worker_domain` | string | Cloudflare Worker 域名 |
 | `cloudflare_email_domains` | string | Cloudflare 邮箱域名，逗号分隔 |
-| `cloudflare_admin_password` | string | Cloudflare 管理密码 |
+| `cloudflare_api_key` | string | cf-mail API Key |
+| `cloudflare_admin_password` | string | 旧字段兼容别名，建议新调用改用 `cloudflare_api_key` |
 
 #### 转发与 SMTP / Telegram 相关字段
 

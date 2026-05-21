@@ -506,6 +506,11 @@ DUCKMAIL_API_KEY = os.getenv("DUCKMAIL_API_KEY", "")  # 可选，dk_ 前缀，�
 CLOUDFLARE_WORKER_DOMAIN = os.getenv("CLOUDFLARE_WORKER_DOMAIN") or os.getenv("WORKER_DOMAIN", "")
 CLOUDFLARE_EMAIL_DOMAINS = os.getenv("CLOUDFLARE_EMAIL_DOMAINS") or os.getenv("EMAIL_DOMAIN", "")
 CLOUDFLARE_ADMIN_PASSWORD = os.getenv("CLOUDFLARE_ADMIN_PASSWORD") or os.getenv("ADMIN_PASSWORD", "")
+CLOUDFLARE_API_KEY = (
+    os.getenv("CLOUDFLARE_API_KEY")
+    or os.getenv("CF_MAIL_API_KEY")
+    or CLOUDFLARE_ADMIN_PASSWORD
+)
 
 # 临时邮箱分组 ID（系统保留）
 TEMP_EMAIL_GROUP_ID = -1
@@ -1485,6 +1490,11 @@ def init_db():
         INSERT OR IGNORE INTO settings (key, value)
         VALUES ('cloudflare_admin_password', ?)
     ''', (CLOUDFLARE_ADMIN_PASSWORD,))
+
+    cursor.execute('''
+        INSERT OR IGNORE INTO settings (key, value)
+        VALUES ('cloudflare_api_key', ?)
+    ''', (CLOUDFLARE_API_KEY,))
 
 
     # 初始化刷新配置

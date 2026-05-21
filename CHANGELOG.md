@@ -7,6 +7,8 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 ## [Unreleased]
 
 ### Fixed
+- 对外邮件 API 新增可选 `delete_after_fetch=true`，只删除本次响应中经过筛选后实际返回的邮件；IMAP 删信现在会执行 `\Deleted` + `EXPUNGE`。
+- Cloudflare Temp Email 改为通过 cf-mail `/api/external/mailboxes` 和 `/api/external/messages` 访问 Worker，设置项新增 `cloudflare_api_key` 并兼容旧字段。
 - 修复 Outlook Refresh Token 遇到 `AADSTS70000` scope 未授权/过期响应时未继续回退到旧 `.default` 或无 scope 刷新方式的问题。
 - Outlook Refresh Token 在 Graph 刷新失败后会继续尝试 IMAP OAuth 刷新，并保存 IMAP 返回的轮换 `refresh_token`。
 

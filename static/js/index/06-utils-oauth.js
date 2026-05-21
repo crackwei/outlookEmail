@@ -1,4 +1,4 @@
-        /* global accountsCache, currentGroupId, escapeHtml, groups, hideModal, invalidateRefreshTokenPreview, isTempEmailGroup, loadAccountsByGroup, loadGroups, oauthPreviewAccount, renderRefreshTokenPreview, setModalVisible, showModal, showToast, updateGroupSelects */
+        /* global accountsCache, currentGroupId, escapeHtml, groups, handleApiError, hideModal, invalidateRefreshTokenPreview, isTempEmailGroup, loadAccountsByGroup, loadGroups, oauthPreviewAccount, renderRefreshTokenPreview, setModalVisible, showModal, showToast, updateGroupSelects */
 
         // ==================== 工具函数 ====================
 
@@ -282,5 +282,180 @@
                 exchangeBtn.disabled = false;
                 saveBtn.disabled = false;
                 saveBtn.textContent = '直接保存（自动换取）';
+            }
+        }
+
+        function getPreferredRegularGroupId(selectId) {
+            const regularGroups = groups.filter(group => group.name !== '临时邮箱');
+            if (!regularGroups.length) {
+                return '';
+            }
+            const currentSelect = document.getElementById(selectId);
+            const currentValue = parseInt(currentSelect?.value || '0', 10);
+            if (currentValue && regularGroups.find(group => group.id === currentValue)) {
+                return currentValue;
+            }
+            if (!isTempEmailGroup && currentGroupId && regularGroups.find(group => group.id === currentGroupId)) {
+                return currentGroupId;
+            }
+            return regularGroups[0].id;
+        }
+
+        function resetBatchOutlookTokenResult() {
+            const resultEl = document.getElementById('batchTokenResult');
+            const summaryEl = document.getElementById('batchTokenResultSummary');
+            const failedGroupEl = document.getElementById('batchTokenFailedGroup');
+            const failedOutputEl = document.getElementById('batchTokenFailedOutput');
+            const failureListEl = document.getElementById('batchTokenFailureList');
+            const invalidListEl = document.getElementById('batchTokenInvalidList');
+
+            if (resultEl) resultEl.style.display = 'none';
+            if (summaryEl) summaryEl.innerHTML = '';
+            if (failedGroupEl) failedGroupEl.style.display = 'none';
+            if (failedOutputEl) failedOutputEl.value = '';
+            if (failureListEl) failureListEl.innerHTML = '';
+            if (invalidListEl) invalidListEl.innerHTML = '';
+        }
+
+        function showBatchOutlookTokenImportModal() {
+            const regularGroups = groups.filter(group => group.name !== '临时邮箱');
+            if (!regularGroups.length) {
+                showToast('请先创建普通邮箱分组', 'error');
+                return;
+            }
+
+            updateGroupSelects();
+            showModal('batchOutlookTokenModal');
+            document.getElementById('batchTokenAccountInput').value = '';
+            document.getElementById('batchTokenProxyInput').value = '';
+            document.getElementById('batchTokenForwardEnabled').checked = false;
+            resetBatchOutlookTokenResult();
+
+            const groupSelect = document.getElementById('batchTokenGroupSelect');
+            if (groupSelect) {
+                groupSelect.value = getPreferredRegularGroupId('batchTokenGroupSelect');
+            }
+
+            const startBtn = document.getElementById('batchTokenStartBtn');
+            if (startBtn) {
+                startBtn.disabled = false;
+                startBtn.textContent = '开始换取并入库';
+            }
+        }
+
+        function hideBatchOutlookTokenImportModal() {
+            hideModal('batchOutlookTokenModal');
+        }
+
+        function renderBatchOutlookTokenResult(data) {
+            const resultEl = document.getElementById('batchTokenResult');
+            const summaryEl = document.getElementById('batchTokenResultSummary');
+            const failedGroupEl = document.getElementById('batchTokenFailedGroup');
+            const failedOutputEl = document.getElementById('batchTokenFailedOutput');
+            const failureListEl = document.getElementById('batchTokenFailureList');
+            const invalidListEl = document.getElementById('batchTokenInvalidList');
+            const failedAccounts = Array.isArray(data.failed_accounts) ? data.failed_accounts : [];
+            const invalidLines = Array.isArray(data.invalid_lines) ? data.invalid_lines : [];
+
+            if (summaryEl) {
+                summaryEl.innerHTML = `
+                    <div class="batch-token-result__title">${escapeHtml(data.message || '批量换 Token 完成')}</div>
+                    <div class="batch-token-result__meta">
+                        已处理 ${Number(data.processed_count || 0)} 个账号，代理 ${Number(data.proxy_count || 0)} 个，
+                        新增 ${Number(data.added_count || 0)} 个，重复 ${Number(data.skipped_count || 0)} 个，
+                        失败 ${Number(data.failed_count || 0)} 个。
+                    </div>
+                `;
+            }
+
+            if (failedOutputEl) {
+                failedOutputEl.value = failedAccounts.map(item => `${item.email || ''}:${item.password || ''}`).join('\n');
+            }
+            if (failedGroupEl) {
+                failedGroupEl.style.display = failedAccounts.length ? '' : 'none';
+            }
+            if (failureListEl) {
+                failureListEl.innerHTML = failedAccounts.length
+                    ? failedAccounts.map(item => `
+                        <div class="batch-token-failure-item">
+                            <strong>${escapeHtml(item.email || '')}</strong>
+                            <span>${escapeHtml(item.error || '换取失败')}</span>
+                            <em>${escapeHtml(item.proxy || 'direct')}</em>
+                        </div>
+                    `).join('')
+                    : '';
+            }
+            if (invalidListEl) {
+                invalidListEl.innerHTML = invalidLines.length
+                    ? `
+                        <div class="batch-token-invalid-title">格式无效</div>
+                        ${invalidLines.map(item => `
+                            <div class="batch-token-invalid-item">
+                                第 ${Number(item.line || 0)} 行：${escapeHtml(item.content || '')}
+                            </div>
+                        `).join('')}
+                    `
+                    : '';
+            }
+            if (resultEl) {
+                resultEl.style.display = 'grid';
+            }
+        }
+
+        async function startBatchOutlookTokenImport() {
+            const accountInput = document.getElementById('batchTokenAccountInput').value.trim();
+            const proxyInput = document.getElementById('batchTokenProxyInput').value.trim();
+            const groupId = parseInt(document.getElementById('batchTokenGroupSelect')?.value || '0', 10);
+            const forwardEnabled = !!document.getElementById('batchTokenForwardEnabled')?.checked;
+            const startBtn = document.getElementById('batchTokenStartBtn');
+
+            if (!groupId) {
+                showToast('请选择目标分组', 'error');
+                return;
+            }
+            if (!accountInput) {
+                showToast('请输入账号密码', 'error');
+                return;
+            }
+
+            resetBatchOutlookTokenResult();
+            if (startBtn) {
+                startBtn.disabled = true;
+                startBtn.textContent = '换取中...';
+            }
+
+            try {
+                const response = await fetch('/api/accounts/import-outlook-passwords', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        account_string: accountInput,
+                        proxy_list: proxyInput,
+                        group_id: groupId,
+                        forward_enabled: forwardEnabled
+                    })
+                });
+                const data = await response.json();
+
+                if (!response.ok || !data.success) {
+                    handleApiError(data, '批量换 Token 失败');
+                    return;
+                }
+
+                renderBatchOutlookTokenResult(data);
+                showToast(data.failed_count ? '批量完成，请查看失败账号' : (data.message || '批量导入完成'), data.failed_count ? 'info' : 'success');
+
+                if (Number(data.added_count || 0) > 0) {
+                    delete accountsCache[groupId];
+                    currentGroupId = groupId;
+                    await loadGroups();
+                }
+            } catch (error) {
+                showToast('批量换 Token 失败: ' + error.message, 'error');
+            } finally {
+                if (startBtn) {
+                    startBtn.disabled = false;
+                    startBtn.textContent = '开始换取并入库';
+                }
             }
         }

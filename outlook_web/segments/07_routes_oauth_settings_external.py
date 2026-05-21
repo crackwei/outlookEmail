@@ -254,7 +254,8 @@ def api_get_settings():
     settings['duckmail_api_key'] = get_duckmail_api_key()
     settings['cloudflare_worker_domain'] = get_cloudflare_worker_domain()
     settings['cloudflare_email_domains'] = ', '.join(get_cloudflare_email_domains())
-    settings['cloudflare_admin_password'] = get_cloudflare_admin_password()
+    settings['cloudflare_api_key'] = get_cloudflare_api_key()
+    settings['cloudflare_admin_password'] = settings['cloudflare_api_key']
     settings['app_timezone'] = get_app_timezone()
     settings['show_account_created_at'] = get_setting('show_account_created_at', 'true')
     settings['show_account_sort_order'] = get_setting('show_account_sort_order', 'false')
@@ -506,12 +507,15 @@ def api_update_settings():
         else:
             errors.append('更新 Cloudflare 邮箱域名失败')
 
-    if 'cloudflare_admin_password' in data:
-        new_password = data['cloudflare_admin_password'].strip()
-        if set_setting('cloudflare_admin_password', new_password):
-            updated.append('Cloudflare 管理密码')
+    if 'cloudflare_api_key' in data or 'cloudflare_admin_password' in data:
+        raw_key = data.get('cloudflare_api_key', data.get('cloudflare_admin_password', ''))
+        new_key = str(raw_key or '').strip()
+        saved_key = set_setting('cloudflare_api_key', new_key)
+        saved_legacy = set_setting('cloudflare_admin_password', new_key)
+        if saved_key and saved_legacy:
+            updated.append('Cloudflare API Key')
         else:
-            errors.append('更新 Cloudflare 管理密码失败')
+            errors.append('更新 Cloudflare API Key 失败')
 
     if 'forward_check_interval_minutes' in data:
         try:

@@ -1,4 +1,4 @@
-        /* global ACCOUNT_LIST_DEFAULT_PAGE_SIZE, ACCOUNT_LIST_MAX_PAGE_SIZE, accountListPageSize, accountListRequestSeq, accountPaginationState, accountsCache, closeAllModals, currentAccount, currentAccountListSource, currentEmailDetail, currentEmailId, currentEmails, currentGroupId, currentSkip, currentSortBy, currentSortOrder, deleteAccount, editingGroupId, escapeHtml, formatAbsoluteDateTime, generateTempEmail, groups, handleApiError, hasMoreEmails, hideModal, isMobileLayout, isTempEmailGroup, loadTempEmails, localStorage, matchesSelectedTagFilters, normalizeTagFilterSelectionValue, openMobilePanel, renderEmptyStateMarkup, renderTempEmailList, resetSelectedAccountView, selectedColor, selectedTagFilters, setModalVisible, shouldShowAccountCreatedAt, shouldShowAccountSortOrder, showAddAccountModal, showGetRefreshTokenModal, showModal, showRefreshError, showTagManagementModal, showToast, suppressGroupClickUntil, tempEmailGroupId, updateCurrentGroupHeader, updateMobileContext */
+        /* global ACCOUNT_LIST_DEFAULT_PAGE_SIZE, ACCOUNT_LIST_MAX_PAGE_SIZE, accountListPageSize, accountListRequestSeq, accountPaginationState, accountsCache, closeAllModals, currentAccount, currentAccountListSource, currentEmailDetail, currentEmailId, currentEmails, currentGroupId, currentSkip, currentSortBy, currentSortOrder, deleteAccount, editingGroupId, escapeHtml, formatAbsoluteDateTime, generateTempEmail, groups, handleApiError, hasMoreEmails, hideModal, isMobileLayout, isTempEmailGroup, loadTempEmails, localStorage, matchesSelectedTagFilters, normalizeTagFilterSelectionValue, openMobilePanel, renderEmptyStateMarkup, renderTempEmailList, resetSelectedAccountView, selectedColor, selectedTagFilters, setModalVisible, shouldShowAccountCreatedAt, shouldShowAccountSortOrder, showAddAccountModal, showBatchOutlookTokenImportModal, showGetRefreshTokenModal, showModal, showRefreshError, showTagManagementModal, showToast, suppressGroupClickUntil, tempEmailGroupId, updateCurrentGroupHeader, updateMobileContext */
 
         // ==================== 分组相关 ====================
 
@@ -470,6 +470,9 @@
                     </button>
                     <button class="panel-action-btn panel-action-btn-accent" onclick="showGetRefreshTokenModal()" title="授权并保存 Outlook 账号">
                         🔑
+                    </button>
+                    <button class="panel-action-btn panel-action-btn-accent" onclick="showBatchOutlookTokenImportModal()" title="批量账号密码换 Token">
+                        ↻
                     </button>
                     <button class="panel-action-btn panel-action-btn-primary" onclick="showAddAccountModal()" title="导入邮箱账号">
                         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -1307,13 +1310,14 @@
 
         // 更新分组下拉选择框
         function updateGroupSelects() {
-            const selects = ['importGroupSelect', 'editGroupSelect', 'tokenSaveGroupSelect'];
+            const selects = ['importGroupSelect', 'editGroupSelect', 'tokenSaveGroupSelect', 'batchTokenGroupSelect'];
             selects.forEach(selectId => {
                 const select = document.getElementById(selectId);
                 if (select) {
                     const currentValue = select.value;
-                    // editGroupSelect 和 tokenSaveGroupSelect 过滤掉临时邮箱分组
-                    const filteredGroups = (selectId === 'editGroupSelect' || selectId === 'tokenSaveGroupSelect')
+                    // 编辑、OAuth 保存和批量换 Token 都只能选择普通邮箱分组
+                    const regularOnly = ['editGroupSelect', 'tokenSaveGroupSelect', 'batchTokenGroupSelect'].includes(selectId);
+                    const filteredGroups = regularOnly
                         ? groups.filter(g => g.name !== '临时邮箱')
                         : groups;
 
@@ -1323,7 +1327,7 @@
                     // 恢复之前的选择
                     if (currentValue && filteredGroups.find(g => g.id === parseInt(currentValue))) {
                         select.value = currentValue;
-                    } else if (selectId === 'tokenSaveGroupSelect') {
+                    } else if (selectId === 'tokenSaveGroupSelect' || selectId === 'batchTokenGroupSelect') {
                         const preferredGroupId = (!isTempEmailGroup && currentGroupId && filteredGroups.find(g => g.id === currentGroupId))
                             ? currentGroupId
                             : (filteredGroups[0]?.id || '');
@@ -1524,11 +1528,11 @@
                     return;
                 }
                 if (channel === 'cloudflare') {
-                    hintEl.textContent = '格式：邮箱----JWT，每行一个。';
-                    inputEl.placeholder = '邮箱----JWT';
+                    hintEl.textContent = '格式：每行一个邮箱地址。';
+                    inputEl.placeholder = '每行一个邮箱地址';
                     if (exampleEl) {
                         exampleEl.style.display = '';
-                        exampleEl.textContent = '示例：\nuser@example.com----eyJhbGciOi...';
+                        exampleEl.textContent = '示例：\nuser@example.com\nuser2@example.com';
                     }
                     return;
                 }

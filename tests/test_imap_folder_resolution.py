@@ -1149,6 +1149,58 @@ class ExternalAccountsApiTests(unittest.TestCase):
         self.assertEqual(called_skip, 0)
         self.assertEqual(called_top, 20)
 
+    def test_external_emails_delete_after_fetch_deletes_filtered_response_items(self):
+        expected_result = {
+            'success': True,
+            'emails': [
+                {
+                    'id': 'keep-1',
+                    'subject': 'Verify account',
+                    'from': 'no-reply@example.com',
+                    'body_preview': '',
+                    'folder': 'inbox',
+                    'id_mode': 'graph',
+                },
+                {
+                    'id': 'skip-1',
+                    'subject': 'Newsletter',
+                    'from': 'news@example.com',
+                    'body_preview': '',
+                    'folder': 'inbox',
+                    'id_mode': 'graph',
+                },
+            ],
+            'method': 'Graph API',
+            'has_more': False,
+        }
+        delete_result = {
+            'success': True,
+            'success_count': 1,
+            'failed_count': 0,
+            'updated_ids': ['keep-1'],
+            'deleted_ids': ['keep-1'],
+            'errors': [],
+        }
+
+        with patch.object(web_outlook_app, 'fetch_account_emails', return_value=expected_result), \
+                patch.object(web_outlook_app, 'delete_email_items_for_account', return_value=delete_result) as delete_mock:
+            response = self.client.get(
+                '/api/external/emails?email=user@outlook.com&folder=inbox&top=2&subject_contains=verify&delete_after_fetch=true',
+                headers={'X-API-Key': 'test-external-key'}
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload['success'])
+        self.assertTrue(payload['delete_after_fetch'])
+        self.assertEqual(payload['delete_result'], delete_result)
+        self.assertEqual([item['id'] for item in payload['emails']], ['keep-1'])
+
+        called_account, called_items, called_folder = delete_mock.call_args.args
+        self.assertEqual(called_account['email'], 'user@outlook.com')
+        self.assertEqual(called_folder, 'inbox')
+        self.assertEqual([item['id'] for item in called_items], ['keep-1'])
+
     def test_external_emails_plus_address_falls_back_to_base_email(self):
         expected_result = {
             'success': True,
@@ -1412,6 +1464,40 @@ class ExternalAccountsApiTests(unittest.TestCase):
             temp_message_count = db.execute('SELECT COUNT(*) AS count FROM temp_email_messages').fetchone()['count']
         self.assertEqual(temp_email_count, 0)
         self.assertEqual(temp_message_count, 0)
+
+
+class EmailDeletionTests(unittest.TestCase):
+    def test_delete_email_items_imap_marks_deleted_then_expunges(self):
+        class DeleteMail(FakeMail):
+            def __init__(self):
+                super().__init__(selectable={'INBOX'})
+                self.store_calls = []
+                self.expunge_called = False
+
+            def uid(self, command, *args, **_kwargs):
+                if command == 'STORE':
+                    self.store_calls.append((command, *args))
+                    return 'OK', [b'1 (FLAGS (\\Deleted))']
+                return 'OK', [b'']
+
+            def expunge(self):
+                self.expunge_called = True
+                return 'OK', [b'1']
+
+        mail = DeleteMail()
+        result = web_outlook_app.delete_email_items_imap(
+            mail,
+            [{'id': '42', 'folder': 'inbox', 'id_mode': 'uid'}],
+            'custom',
+            default_mode='uid',
+        )
+
+        self.assertTrue(result['success'])
+        self.assertEqual(result['success_count'], 1)
+        self.assertEqual(result['deleted_ids'], ['42'])
+        self.assertTrue(mail.expunge_called)
+        self.assertEqual(mail.store_calls, [('STORE', '42', '+FLAGS.SILENT', r'(\Deleted)')])
+        self.assertEqual(mail.select_calls, [('INBOX', False)])
 
 
 class BatchForwardingApiTests(unittest.TestCase):

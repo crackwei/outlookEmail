@@ -10,9 +10,20 @@ if TYPE_CHECKING:
 
 
 def get_cloudflare_admin_password() -> str:
-    """获取 Cloudflare Temp Email 管理密码"""
+    """获取旧版 Cloudflare 管理密码配置，仅用于兼容历史字段。"""
     password = get_setting('cloudflare_admin_password')
     return password if password is not None else CLOUDFLARE_ADMIN_PASSWORD
+
+
+def get_cloudflare_api_key() -> str:
+    """获取 cf-mail 外部 API Key，兼容旧的管理员密码配置项。"""
+    api_key = get_setting('cloudflare_api_key')
+    if api_key:
+        return api_key
+    legacy_password = get_setting('cloudflare_admin_password')
+    if legacy_password:
+        return legacy_password
+    return CLOUDFLARE_API_KEY
 
 
 # ==================== 分组操作 ====================

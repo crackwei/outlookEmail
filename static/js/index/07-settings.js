@@ -773,7 +773,7 @@
                     document.getElementById('settingsDuckmailApiKey').value = data.settings.duckmail_api_key || '';
                     document.getElementById('settingsCloudflareWorkerDomain').value = data.settings.cloudflare_worker_domain || '';
                     document.getElementById('settingsCloudflareEmailDomains').value = data.settings.cloudflare_email_domains || '';
-                    document.getElementById('settingsCloudflareAdminPassword').value = data.settings.cloudflare_admin_password || '';
+                    document.getElementById('settingsCloudflareApiKey').value = data.settings.cloudflare_api_key || data.settings.cloudflare_admin_password || '';
                     document.getElementById('settingsAppTimezone').value = appTimeZone;
                     document.getElementById('settingsPassword').value = '';
 
@@ -848,7 +848,7 @@
             settings.duckmail_api_key = document.getElementById('settingsDuckmailApiKey').value.trim();
             settings.cloudflare_worker_domain = document.getElementById('settingsCloudflareWorkerDomain').value.trim();
             settings.cloudflare_email_domains = document.getElementById('settingsCloudflareEmailDomains').value.trim();
-            settings.cloudflare_admin_password = document.getElementById('settingsCloudflareAdminPassword').value.trim();
+            settings.cloudflare_api_key = document.getElementById('settingsCloudflareApiKey').value.trim();
 
             const days = parseInt(refreshDays, 10);
             const delay = parseInt(refreshDelay, 10);

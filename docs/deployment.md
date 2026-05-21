@@ -133,7 +133,8 @@ docker-compose down
 | `DUCKMAIL_API_KEY` | DuckMail API Key | 空 |
 | `CLOUDFLARE_WORKER_DOMAIN` | Cloudflare Temp Email Worker 域名，也兼容读取 `WORKER_DOMAIN` | 空 |
 | `CLOUDFLARE_EMAIL_DOMAINS` | Cloudflare 临时邮箱域名列表，逗号分隔，也兼容读取 `EMAIL_DOMAIN` | 空 |
-| `CLOUDFLARE_ADMIN_PASSWORD` | Cloudflare 管理密码，也兼容读取 `ADMIN_PASSWORD` | 空 |
+| `CLOUDFLARE_API_KEY` | cf-mail API Key，用于调用 `/api/external/mailboxes` 和 `/api/external/messages`，也兼容读取 `CF_MAIL_API_KEY` | 空 |
+| `CLOUDFLARE_ADMIN_PASSWORD` | 旧版兼容字段；未设置 `CLOUDFLARE_API_KEY` 时会作为 cf-mail API Key 读取，也兼容 `ADMIN_PASSWORD` | 空 |
 | `OAUTH_CLIENT_ID` | OAuth 客户端 ID | `建议使用自己的，如果实在搞不到不填的话会使用默认的` |
 | `OAUTH_REDIRECT_URI` | OAuth 重定向 URI | `建议使用自己的，如果实在搞不到不填的话会使用默认的` |
 

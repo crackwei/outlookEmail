@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from outlook_web.protocol_oauth import OutlookPasswordOAuthClient, normalize_proxy_url
+
 if TYPE_CHECKING:
     # These segmented files are executed into the shared `web_outlook_app`
     # globals at runtime. Importing from the assembled module keeps IDE
@@ -827,6 +829,187 @@ def parse_external_account_import_payload(data: Dict[str, Any]) -> tuple[List[Di
         invalid_count += 1
 
     return parsed_accounts, invalid_count, None
+
+
+def split_outlook_password_import_line(line: str) -> Optional[Dict[str, str]]:
+    value = str(line or '').strip()
+    if not value:
+        return None
+
+    for delimiter in ('----', '---', ':'):
+        if delimiter in value:
+            email_addr, password = value.split(delimiter, 1)
+            email_addr = normalize_email_address(email_addr)
+            password = password.strip()
+            if email_addr and '@' in email_addr and password:
+                return {
+                    'email': email_addr,
+                    'password': password,
+                }
+            return None
+    return None
+
+
+def parse_outlook_password_import_text(account_text: str) -> tuple[List[Dict[str, str]], List[Dict[str, Any]]]:
+    parsed_accounts: List[Dict[str, str]] = []
+    invalid_lines: List[Dict[str, Any]] = []
+
+    for index, raw_line in enumerate(str(account_text or '').splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        parsed = split_outlook_password_import_line(line)
+        if parsed:
+            parsed_accounts.append(parsed)
+        else:
+            invalid_lines.append({'line': index, 'content': line})
+
+    return parsed_accounts, invalid_lines
+
+
+def normalize_outlook_password_proxy_list(raw_proxies: Any) -> List[str]:
+    if isinstance(raw_proxies, str):
+        proxy_items = raw_proxies.splitlines()
+    elif isinstance(raw_proxies, (list, tuple)):
+        proxy_items = raw_proxies
+    else:
+        proxy_items = []
+
+    proxies: List[str] = []
+    for item in proxy_items:
+        proxy_url = normalize_proxy_url(str(item or '').strip())
+        if proxy_url or str(item or '').strip().lower() in {'direct', 'none', 'no_proxy', 'noproxy', '直连'}:
+            proxies.append(proxy_url)
+
+    return proxies or ['']
+
+
+def parse_outlook_password_proxy_payload(data: Dict[str, Any]) -> List[str]:
+    raw_proxies = (
+        data.get('proxies')
+        if 'proxies' in data
+        else data.get('proxy_list', data.get('proxy_urls', data.get('proxy_text', '')))
+    )
+    return normalize_outlook_password_proxy_list(raw_proxies)
+
+
+def parse_outlook_password_timeout(value: Any, default: int = 60) -> int:
+    try:
+        timeout = int(value or default)
+    except (TypeError, ValueError):
+        timeout = default
+    return max(10, min(timeout, 180))
+
+
+def exchange_outlook_password_accounts(
+    accounts: List[Dict[str, str]],
+    proxies: List[str],
+    timeout: int,
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    token_accounts: List[Dict[str, Any]] = []
+    failed_accounts: List[Dict[str, Any]] = []
+    proxy_pool = proxies or ['']
+
+    for index, account in enumerate(accounts):
+        proxy_url = proxy_pool[index % len(proxy_pool)]
+        client = OutlookPasswordOAuthClient(
+            OAUTH_CLIENT_ID,
+            OAUTH_REDIRECT_URI,
+            OAUTH_SCOPES,
+            proxy_url=proxy_url,
+            timeout=timeout,
+        )
+        result = client.get_refresh_token(account['email'], account['password'])
+        if result.success and result.refresh_token:
+            token_accounts.append({
+                'email': account['email'],
+                'password': account['password'],
+                'client_id': OAUTH_CLIENT_ID,
+                'refresh_token': result.refresh_token,
+                'provider': 'outlook',
+                'account_type': 'outlook',
+                'imap_host': IMAP_SERVER_NEW,
+                'imap_port': IMAP_PORT,
+                'imap_password': '',
+            })
+        else:
+            failed_accounts.append({
+                'email': account['email'],
+                'password': account['password'],
+                'error': result.error or '换取 token 失败',
+                'proxy': proxy_url or 'direct',
+            })
+
+    return token_accounts, failed_accounts
+
+
+@app.route('/api/accounts/import-outlook-passwords', methods=['POST'])
+@login_required
+def api_import_outlook_passwords():
+    """通过 Outlook 邮箱密码批量自动换取 Refresh Token 并入库。"""
+    data = request.get_json(silent=True) or {}
+    group, error_response = resolve_account_import_group(data)
+    if error_response:
+        return error_response
+
+    account_text = str(data.get('account_string') or data.get('accounts_text') or '').strip()
+    if not account_text:
+        return jsonify({'success': False, 'error': '请输入邮箱账号和密码'}), 400
+
+    parsed_accounts, invalid_lines = parse_outlook_password_import_text(account_text)
+    if not parsed_accounts:
+        return jsonify({
+            'success': False,
+            'error': '没有可处理的有效账号，格式应为 用户名:密码 或 用户名---密码',
+            'invalid_count': len(invalid_lines),
+            'invalid_lines': invalid_lines,
+        }), 400
+
+    proxies = parse_outlook_password_proxy_payload(data)
+    timeout = parse_outlook_password_timeout(data.get('timeout', 60))
+    forward_enabled = parse_bool_flag(data.get('forward_enabled'), False)
+    sort_order = parse_account_sort_order_input(data.get('sort_order')) if 'sort_order' in data else None
+
+    token_accounts, failed_accounts = exchange_outlook_password_accounts(parsed_accounts, proxies, timeout)
+    result = add_accounts_bulk(token_accounts, int(group['id']), forward_enabled, sort_order)
+    added = result.get('added_count', 0)
+    skipped_count = result.get('skipped_count', 0)
+    token_success_count = len(token_accounts)
+    failed_count = len(failed_accounts)
+    invalid_count = len(invalid_lines)
+
+    if added > 0:
+        log_audit(
+            'import',
+            'outlook_password_accounts',
+            str(group['id']),
+            f"通过邮箱密码批量换取 Token 并导入 {added} 个 Outlook 账号"
+        )
+
+    detail_parts = [
+        f'成功换取 {token_success_count} 个',
+        f'新增入库 {added} 个',
+    ]
+    if skipped_count:
+        detail_parts.append(f'重复跳过 {skipped_count} 个')
+    if failed_count:
+        detail_parts.append(f'换取失败 {failed_count} 个')
+    if invalid_count:
+        detail_parts.append(f'格式无效 {invalid_count} 行')
+
+    return jsonify({
+        'success': True,
+        'message': '批量换 Token 完成：' + '，'.join(detail_parts),
+        'processed_count': len(parsed_accounts),
+        'token_success_count': token_success_count,
+        'added_count': added,
+        'skipped_count': skipped_count,
+        'failed_count': failed_count,
+        'failed_accounts': failed_accounts,
+        'invalid_count': invalid_count,
+        'invalid_lines': invalid_lines,
+        'proxy_count': len(proxies),
+    })
 
 
 @app.route('/api/external/accounts', methods=['POST'])
