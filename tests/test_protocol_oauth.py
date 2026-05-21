@@ -1,6 +1,7 @@
 import unittest
 
 from outlook_web.protocol_oauth import (
+    classify_microsoft_login_page,
     extract_html_redirect_url,
     extract_microsoft_error,
     is_login_auto_post_interstitial,
@@ -127,6 +128,29 @@ class ProtocolOAuthParsingTests(unittest.TestCase):
 
         self.assertIn('AADSTS900561', extract_microsoft_error(page))
 
+    def test_classify_login_page_detects_verification_and_password_page(self):
+        proof_page = '''
+        <html>
+          <meta name="PageID" content="ConvergedTfa" />
+          <title>Help us protect your account</title>
+        </html>
+        '''
+        password_page = r'''
+        <html>
+          <meta name="PageID" content="ConvergedSignIn" />
+          <script>
+            var $Config = {
+              "sFT": "password-token",
+              "sFTName": "flowToken",
+              "urlPost": "https:\/\/login.microsoftonline.com\/common\/login"
+            };
+          </script>
+        </html>
+        '''
+
+        self.assertIn('额外安全验证', classify_microsoft_login_page(proof_page))
+        self.assertIn('仍停留', classify_microsoft_login_page(password_page))
+
     def test_follow_login_interstitial_posts_instead_of_following_redirect_get(self):
         class FakeResponse:
             def __init__(self, text, url='https://login.microsoftonline.com/common/login', status_code=200):
@@ -200,6 +224,35 @@ class ProtocolOAuthParsingTests(unittest.TestCase):
         self.assertEqual(fake_session.posts[0]['data']['ctx'], 'ctx-value')
         self.assertEqual(inputs['flowToken'], 'password-token')
         self.assertTrue(action)
+
+    def test_extract_code_from_redirects_reports_microsoft_error_page(self):
+        class FakeResponse:
+            def __init__(self, text, url='https://login.microsoftonline.com/common/login', status_code=200):
+                self.text = text
+                self.url = url
+                self.status_code = status_code
+                self.headers = {}
+
+        error_page = r'''
+        <html>
+          <meta name="PageID" content="ConvergedError" />
+          <script>
+            var $Config = {
+              "strServiceExceptionMessage": "AADSTS50076: due to a configuration change, MFA is required."
+            };
+          </script>
+        </html>
+        '''
+        client = OutlookPasswordOAuthClient(
+            'client-id',
+            'http://localhost:8080',
+            ['offline_access'],
+        )
+
+        success, message = client._extract_code_from_redirects(FakeResponse(error_page))
+
+        self.assertFalse(success)
+        self.assertIn('AADSTS50076', message)
 
 
 if __name__ == '__main__':

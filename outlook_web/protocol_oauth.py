@@ -264,6 +264,13 @@ def extract_meta_content(html_text: str, name: str) -> str:
     return html.unescape(match.group(1)).strip()
 
 
+def extract_page_title(html_text: str) -> str:
+    match = re.search(r"<title[^>]*>(.*?)</title>", html_text or "", flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return ""
+    return html.unescape(re.sub(r"\s+", " ", match.group(1))).strip()
+
+
 def is_login_auto_post_interstitial(html_text: str) -> bool:
     page_id = extract_meta_content(html_text, "PageID").lower()
     if page_id in {"bssointerrupt"}:
@@ -286,6 +293,44 @@ def extract_microsoft_error(html_text: str) -> str:
     if not parts and error_code:
         parts.append(f"Microsoft 登录错误代码 {error_code}")
     return "；".join(parts)
+
+
+def classify_microsoft_login_page(html_text: str) -> str:
+    microsoft_error = extract_microsoft_error(html_text)
+    if microsoft_error:
+        return f"Microsoft 登录错误: {microsoft_error}"
+
+    page_id = extract_meta_content(html_text, "PageID")
+    page_id_lower = page_id.lower()
+    title = extract_page_title(html_text)
+    text_lower = (html_text or "").lower()
+
+    if "captcha" in text_lower or "hip" in page_id_lower:
+        return "Microsoft 要求验证码，需手动处理"
+
+    verification_markers = (
+        "proof",
+        "otc",
+        "tfa",
+        "mfa",
+        "challenge",
+        "identity",
+        "risk",
+        "recover",
+        "verify",
+        "authenticator",
+    )
+    if any(marker in page_id_lower for marker in verification_markers):
+        return f"Microsoft 要求额外安全验证，需手动处理{f'（{page_id}）' if page_id else ''}"
+
+    if "ConvergedSignIn".lower() == page_id_lower and extract_login_config_action(html_text):
+        return "提交密码后仍停留在 Microsoft 登录页，可能密码错误、账号受限或需要额外验证"
+
+    if page_id:
+        return f"未获取到授权 code，停留在 Microsoft 页面: {page_id}"
+    if title:
+        return f"未获取到授权 code，停留在 Microsoft 页面: {title}"
+    return ""
 
 
 def parse_login_form(html: str) -> Tuple[Dict[str, str], str]:
@@ -510,6 +555,19 @@ class OutlookPasswordOAuthClient:
             )
             if code_success or is_redirect_match(current_response.url, self.redirect_uri):
                 return code_success, code_or_error
+
+            html_redirect_url = extract_html_redirect_url(current_response.text)
+            if html_redirect_url:
+                current_response = self.session.get(
+                    urljoin(current_response.url, html_redirect_url),
+                    timeout=self.timeout,
+                    allow_redirects=False,
+                )
+                continue
+
+            page_message = classify_microsoft_login_page(current_response.text)
+            if page_message:
+                return False, page_message
             break
 
         return False, "未获取到授权 code，可能需要验证码、二次验证或账号密码无效"
