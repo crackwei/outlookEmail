@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import html
 import hashlib
+import re
 import secrets
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -75,11 +77,140 @@ class LoginFormParser(HTMLParser):
                 return {str(key): str(value) for key, value in inputs.items()}
         return dict(self.inputs)
 
+    def best_login_form(self) -> Tuple[Dict[str, str], str]:
+        preferred_names = {"flowToken", "PPFT", "login", "loginfmt", "passwd"}
+        for form in self.forms:
+            inputs = form.get("inputs")
+            if not isinstance(inputs, dict):
+                continue
+            if preferred_names.intersection(str(key) for key in inputs):
+                return (
+                    {str(key): str(value) for key, value in inputs.items()},
+                    str(form.get("action") or "").strip(),
+                )
+        return self.first_form_inputs(), self.first_form_action()
+
+
+def decode_javascript_string(value: str) -> str:
+    text = html.unescape(str(value or ""))
+
+    def replace_unicode(match: re.Match[str]) -> str:
+        return chr(int(match.group(1), 16))
+
+    def replace_hex(match: re.Match[str]) -> str:
+        return chr(int(match.group(1), 16))
+
+    text = re.sub(r"\\u([0-9a-fA-F]{4})", replace_unicode, text)
+    text = re.sub(r"\\x([0-9a-fA-F]{2})", replace_hex, text)
+    replacements = {
+        r"\/": "/",
+        r"\"": '"',
+        r"\'": "'",
+        r"\&": "&",
+    }
+    for escaped, plain in replacements.items():
+        text = text.replace(escaped, plain)
+    return text
+
+
+def extract_javascript_string(html_text: str, key: str) -> str:
+    key_pattern = re.escape(key)
+    patterns = [
+        rf'"{key_pattern}"\s*:\s*"((?:\\.|[^"\\])*)"',
+        rf"'{key_pattern}'\s*:\s*'((?:\\.|[^'\\])*)'",
+        rf"{key_pattern}\s*:\s*\"((?:\\.|[^\"\\])*)\"",
+        rf"{key_pattern}\s*:\s*'((?:\\.|[^'\\])*)'",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, html_text or "", flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return decode_javascript_string(match.group(1))
+    return ""
+
+
+def extract_login_config_inputs(html_text: str) -> Dict[str, str]:
+    inputs: Dict[str, str] = {}
+
+    sft_tag = extract_javascript_string(html_text, "sFTTag")
+    if sft_tag:
+        nested_parser = LoginFormParser()
+        nested_parser.feed(sft_tag)
+        inputs.update(nested_parser.inputs)
+
+    flow_token = extract_javascript_string(html_text, "sFT")
+    flow_token_name = extract_javascript_string(html_text, "sFTName") or "flowToken"
+    if flow_token and flow_token_name:
+        inputs.setdefault(flow_token_name, flow_token)
+        if flow_token_name == "flowToken":
+            inputs.setdefault("flowToken", flow_token)
+
+    for js_key, input_name in (
+        ("sCtx", "ctx"),
+        ("canary", "canary"),
+        ("apiCanary", "apiCanary"),
+        ("hpgrequestid", "hpgrequestid"),
+    ):
+        value = extract_javascript_string(html_text, js_key)
+        if value:
+            inputs.setdefault(input_name, value)
+
+    return inputs
+
+
+def extract_login_config_action(html_text: str) -> str:
+    for key in ("urlPost", "urlPostAad", "urlPostMsa"):
+        action = extract_javascript_string(html_text, key)
+        if action:
+            return action
+    return ""
+
+
+def extract_html_redirect_url(html_text: str) -> str:
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", html_text or "", flags=re.IGNORECASE | re.DOTALL)
+    title = html.unescape(re.sub(r"\s+", " ", title_match.group(1))).strip().lower() if title_match else ""
+    is_redirect_page = "redirect" in title or "重定向" in title
+
+    if is_redirect_page:
+        content_match = re.search(
+            r'<meta[^>]+http-equiv=["\']?refresh["\']?[^>]+content=["\']([^"\']+)["\']',
+            html_text or "",
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if content_match:
+            content = html.unescape(content_match.group(1))
+            url_match = re.search(r"url\s*=\s*([^;]+)$", content, flags=re.IGNORECASE)
+            if url_match:
+                redirect_url = decode_javascript_string(url_match.group(1).strip(" '\""))
+                if "/jsdisabled" not in redirect_url.lower():
+                    return redirect_url
+
+    for pattern in (
+        r"window\.location\.(?:href|assign)\s*=\s*['\"]((?:\\.|[^'\"\\])+)['\"]",
+        r"window\.location\.(?:assign|replace)\(\s*['\"]((?:\\.|[^'\"\\])+)['\"]\s*\)",
+        r"document\.location\s*=\s*['\"]((?:\\.|[^'\"\\])+)['\"]",
+    ):
+        match = re.search(pattern, html_text or "", flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return decode_javascript_string(match.group(1))
+
+    if is_redirect_page:
+        return extract_login_config_action(html_text)
+
+    return ""
+
 
 def parse_login_form(html: str) -> Tuple[Dict[str, str], str]:
     parser = LoginFormParser()
     parser.feed(html or "")
-    return parser.first_form_inputs(), parser.first_form_action()
+    inputs, action = parser.best_login_form()
+
+    config_inputs = extract_login_config_inputs(html)
+    for key, value in config_inputs.items():
+        inputs.setdefault(key, value)
+
+    if not action:
+        action = extract_login_config_action(html)
+    return inputs, action
 
 
 def build_pkce_pair() -> Tuple[str, str]:
@@ -180,6 +311,24 @@ class OutlookPasswordOAuthClient:
     def _absolute_action_url(self, action_url: str) -> str:
         return urljoin(self.LOGIN_URL, str(action_url or "").strip())
 
+    def _follow_html_redirects(self, response: requests.Response) -> requests.Response:
+        current_response = response
+        for _ in range(5):
+            redirect_url = extract_html_redirect_url(current_response.text)
+            if not redirect_url:
+                return current_response
+
+            absolute_url = urljoin(current_response.url, redirect_url)
+            if absolute_url == current_response.url:
+                return current_response
+
+            current_response = self.session.get(
+                absolute_url,
+                timeout=self.timeout,
+                allow_redirects=True,
+            )
+        return current_response
+
     def _build_login_payload(self, email_addr: str, password: str, form_inputs: Dict[str, str]) -> Dict[str, str]:
         payload = dict(form_inputs or {})
         payload.update({
@@ -246,6 +395,7 @@ class OutlookPasswordOAuthClient:
         )
         if auth_response.status_code != 200:
             return False, f"访问授权页失败: HTTP {auth_response.status_code}"
+        auth_response = self._follow_html_redirects(auth_response)
 
         form_inputs, post_action = parse_login_form(auth_response.text)
         if not form_inputs.get("flowToken") and not form_inputs.get("PPFT"):
