@@ -586,6 +586,8 @@ def get_account_list_request_args() -> Dict[str, Any]:
         'sort_by': sort_by,
         'sort_order': sort_order,
         'tag_ids': normalize_tag_filter_values(request.args.get('tag_ids', '')),
+        'tag_match': normalize_tag_match(request.args.get('tag_match', 'any')),
+        'exclude_tag_ids': normalize_tag_filter_values(request.args.get('exclude_tag_ids', '')),
         'include_untagged': include_untagged,
     }
 
@@ -618,13 +620,21 @@ def api_get_accounts():
         sort_order=list_args['sort_order'],
         tag_ids=list_args['tag_ids'],
         include_untagged=list_args['include_untagged'],
+        tag_match=list_args['tag_match'],
+        exclude_tag_ids=list_args['exclude_tag_ids'],
     )
 
     # 返回时隐藏敏感信息
     safe_accounts = []
     for acc in accounts:
         safe_accounts.append(serialize_account_summary(acc))
-    total = count_accounts(group_id, tag_ids=list_args['tag_ids'], include_untagged=list_args['include_untagged'])
+    total = count_accounts(
+        group_id,
+        tag_ids=list_args['tag_ids'],
+        include_untagged=list_args['include_untagged'],
+        tag_match=list_args['tag_match'],
+        exclude_tag_ids=list_args['exclude_tag_ids'],
+    )
     return jsonify(build_account_list_response(
         safe_accounts,
         total,
@@ -648,6 +658,8 @@ def api_external_get_accounts():
         sort_order=list_args['sort_order'],
         tag_ids=list_args['tag_ids'],
         include_untagged=list_args['include_untagged'],
+        tag_match=list_args['tag_match'],
+        exclude_tag_ids=list_args['exclude_tag_ids'],
     )
 
     safe_accounts = []
@@ -661,7 +673,13 @@ def api_external_get_accounts():
             )
         )
 
-    total = count_accounts(group_id, tag_ids=list_args['tag_ids'], include_untagged=list_args['include_untagged'])
+    total = count_accounts(
+        group_id,
+        tag_ids=list_args['tag_ids'],
+        include_untagged=list_args['include_untagged'],
+        tag_match=list_args['tag_match'],
+        exclude_tag_ids=list_args['exclude_tag_ids'],
+    )
     return jsonify({
         'success': True,
         'total': total,
@@ -1281,7 +1299,18 @@ def api_get_project_accounts(project_key):
     group_id = request.args.get('group_id', type=int)
     provider = request.args.get('provider', '').strip()
     keyword = request.args.get('keyword', '').strip()
-    result = load_project_accounts(project_key, status=status, group_id=group_id, provider=provider, keyword=keyword)
+    list_args = get_account_list_request_args()
+    result = load_project_accounts(
+        project_key,
+        status=status,
+        group_id=group_id,
+        provider=provider,
+        keyword=keyword,
+        tag_ids=list_args['tag_ids'],
+        tag_match=list_args['tag_match'],
+        exclude_tag_ids=list_args['exclude_tag_ids'],
+        include_untagged=list_args['include_untagged'],
+    )
     if not result:
         return jsonify({'success': False, 'error': '项目不存在'}), 404
     return jsonify({'success': True, 'data': result})
@@ -1552,7 +1581,8 @@ def api_search_accounts():
     group_id = request.args.get('group_id', type=int)
     list_args = get_account_list_request_args()
 
-    if not query:
+    has_tag_filters = bool(list_args['tag_ids'] or list_args['exclude_tag_ids'] or list_args['include_untagged'])
+    if not query and not has_tag_filters:
         return jsonify(build_account_list_response([], 0, list_args['limit'], list_args['offset']))
 
     accounts = search_account_records(
@@ -1564,6 +1594,8 @@ def api_search_accounts():
         sort_order=list_args['sort_order'],
         tag_ids=list_args['tag_ids'],
         include_untagged=list_args['include_untagged'],
+        tag_match=list_args['tag_match'],
+        exclude_tag_ids=list_args['exclude_tag_ids'],
     )
     safe_accounts = []
     for acc in accounts:
@@ -1574,6 +1606,8 @@ def api_search_accounts():
         query=query,
         tag_ids=list_args['tag_ids'],
         include_untagged=list_args['include_untagged'],
+        tag_match=list_args['tag_match'],
+        exclude_tag_ids=list_args['exclude_tag_ids'],
     )
     return jsonify(build_account_list_response(
         safe_accounts,

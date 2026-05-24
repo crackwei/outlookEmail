@@ -279,40 +279,81 @@ def normalize_tag_filter_values(tag_ids: Any = None) -> List[int]:
     return normalized
 
 
-def build_account_tag_filter_clause(tag_ids: Any = None, include_untagged: bool = False) -> tuple[str, List[Any]]:
+def normalize_tag_match(tag_match: Any = 'any') -> str:
+    normalized = str(tag_match or '').strip().lower()
+    return normalized if normalized in {'any', 'all'} else 'any'
+
+
+def build_account_tag_filter_clause(tag_ids: Any = None, tag_match: Any = 'any',
+                                    exclude_tag_ids: Any = None,
+                                    include_untagged: bool = False,
+                                    account_alias: str = 'a') -> tuple[str, List[Any]]:
     normalized_tag_ids = normalize_tag_filter_values(tag_ids)
+    normalized_exclude_tag_ids = normalize_tag_filter_values(exclude_tag_ids)
+    normalized_tag_match = normalize_tag_match(tag_match)
     clauses = []
     params: List[Any] = []
 
+    include_clauses = []
+    include_params: List[Any] = []
     if normalized_tag_ids:
         placeholders = ','.join('?' * len(normalized_tag_ids))
-        clauses.append(f'''
-            EXISTS (
-                SELECT 1
-                FROM account_tags at_filter
-                WHERE at_filter.account_id = a.id
-                  AND at_filter.tag_id IN ({placeholders})
-            )
-        ''')
-        params.extend(normalized_tag_ids)
+        if normalized_tag_match == 'all':
+            include_clauses.append(f'''
+                (
+                    SELECT COUNT(DISTINCT at_filter.tag_id)
+                    FROM account_tags at_filter
+                    WHERE at_filter.account_id = {account_alias}.id
+                      AND at_filter.tag_id IN ({placeholders})
+                ) = ?
+            ''')
+            include_params.extend(normalized_tag_ids)
+            include_params.append(len(normalized_tag_ids))
+        else:
+            include_clauses.append(f'''
+                EXISTS (
+                    SELECT 1
+                    FROM account_tags at_filter
+                    WHERE at_filter.account_id = {account_alias}.id
+                      AND at_filter.tag_id IN ({placeholders})
+                )
+            ''')
+            include_params.extend(normalized_tag_ids)
 
     if include_untagged:
-        clauses.append('''
+        include_clauses.append(f'''
             NOT EXISTS (
                 SELECT 1
                 FROM account_tags at_filter
-                WHERE at_filter.account_id = a.id
+                WHERE at_filter.account_id = {account_alias}.id
             )
         ''')
+
+    if include_clauses:
+        clauses.append('(' + ' OR '.join(include_clauses) + ')')
+        params.extend(include_params)
+
+    if normalized_exclude_tag_ids:
+        placeholders = ','.join('?' * len(normalized_exclude_tag_ids))
+        clauses.append(f'''
+            NOT EXISTS (
+                SELECT 1
+                FROM account_tags at_exclude
+                WHERE at_exclude.account_id = {account_alias}.id
+                  AND at_exclude.tag_id IN ({placeholders})
+            )
+        ''')
+        params.extend(normalized_exclude_tag_ids)
 
     if not clauses:
         return '', []
 
-    return '(' + ' OR '.join(clauses) + ')', params
+    return '(' + ' AND '.join(clauses) + ')', params
 
 
 def build_account_where_clause(group_id: int = None, query: str = '',
-                               tag_ids: Any = None, include_untagged: bool = False) -> tuple[str, List[Any]]:
+                               tag_ids: Any = None, include_untagged: bool = False,
+                               tag_match: Any = 'any', exclude_tag_ids: Any = None) -> tuple[str, List[Any]]:
     clauses = []
     params: List[Any] = []
 
@@ -326,7 +367,12 @@ def build_account_where_clause(group_id: int = None, query: str = '',
         clauses.append('(a.email LIKE ? OR a.remark LIKE ? OR t.name LIKE ? OR aa.alias_email LIKE ?)')
         params.extend([like_query, like_query, like_query, like_query])
 
-    tag_clause, tag_params = build_account_tag_filter_clause(tag_ids, include_untagged)
+    tag_clause, tag_params = build_account_tag_filter_clause(
+        tag_ids=tag_ids,
+        tag_match=tag_match,
+        exclude_tag_ids=exclude_tag_ids,
+        include_untagged=include_untagged,
+    )
     if tag_clause:
         clauses.append(tag_clause)
         params.extend(tag_params)
@@ -402,11 +448,18 @@ def serialize_account_rows(rows: List[sqlite3.Row], db=None) -> List[Dict]:
 
 def load_accounts(group_id: int = None, limit: Any = None, offset: Any = 0,
                   sort_by: Any = 'created_at', sort_order: Any = 'desc',
-                  tag_ids: Any = None, include_untagged: bool = False) -> List[Dict]:
+                  tag_ids: Any = None, include_untagged: bool = False,
+                  tag_match: Any = 'any', exclude_tag_ids: Any = None) -> List[Dict]:
     """从数据库加载邮箱账号"""
     db = get_db()
     normalized_limit, normalized_offset = normalize_account_pagination(limit, offset)
-    where_clause, params = build_account_where_clause(group_id, tag_ids=tag_ids, include_untagged=include_untagged)
+    where_clause, params = build_account_where_clause(
+        group_id,
+        tag_ids=tag_ids,
+        include_untagged=include_untagged,
+        tag_match=tag_match,
+        exclude_tag_ids=exclude_tag_ids,
+    )
     order_clause = build_account_order_clause(sort_by, sort_order)
     pagination_clause = ''
     if normalized_limit is not None:
@@ -426,7 +479,8 @@ def load_accounts(group_id: int = None, limit: Any = None, offset: Any = 0,
 
 
 def count_accounts(group_id: int = None, query: str = '',
-                   tag_ids: Any = None, include_untagged: bool = False) -> int:
+                   tag_ids: Any = None, include_untagged: bool = False,
+                   tag_match: Any = 'any', exclude_tag_ids: Any = None) -> int:
     db = get_db()
     normalized_query = str(query or '').strip()
     joins = '''
@@ -438,7 +492,14 @@ def count_accounts(group_id: int = None, query: str = '',
             LEFT JOIN account_tags at ON a.id = at.account_id
             LEFT JOIN tags t ON at.tag_id = t.id
         '''
-    where_clause, params = build_account_where_clause(group_id, normalized_query, tag_ids, include_untagged)
+    where_clause, params = build_account_where_clause(
+        group_id,
+        normalized_query,
+        tag_ids=tag_ids,
+        include_untagged=include_untagged,
+        tag_match=tag_match,
+        exclude_tag_ids=exclude_tag_ids,
+    )
     count_expr = 'COUNT(DISTINCT a.id)' if normalized_query else 'COUNT(*)'
     row = db.execute(f'''
         SELECT {count_expr} AS count
@@ -452,14 +513,17 @@ def count_accounts(group_id: int = None, query: str = '',
 def search_account_records(query: str, limit: Any = None, offset: Any = 0,
                            sort_by: Any = 'created_at', sort_order: Any = 'desc',
                            tag_ids: Any = None, include_untagged: bool = False,
-                           group_id: int = None) -> List[Dict]:
+                           group_id: int = None, tag_match: Any = 'any',
+                           exclude_tag_ids: Any = None) -> List[Dict]:
     db = get_db()
     normalized_limit, normalized_offset = normalize_account_pagination(limit, offset)
     where_clause, params = build_account_where_clause(
         group_id=group_id,
         query=query,
         tag_ids=tag_ids,
-        include_untagged=include_untagged
+        include_untagged=include_untagged,
+        tag_match=tag_match,
+        exclude_tag_ids=exclude_tag_ids,
     )
     order_clause = build_account_order_clause(sort_by, sort_order)
     pagination_clause = ''
@@ -2020,7 +2084,9 @@ def restore_project_account(project_key: str, account_id: int, detail: str = '')
 
 
 def load_project_accounts(project_key: str, status: str = '', group_id: Optional[int] = None,
-                          provider: str = '', keyword: str = '') -> Optional[Dict[str, Any]]:
+                          provider: str = '', keyword: str = '', tag_ids: Any = None,
+                          tag_match: Any = 'any', exclude_tag_ids: Any = None,
+                          include_untagged: bool = False) -> Optional[Dict[str, Any]]:
     db = get_db()
     project = get_project_by_key(project_key, db=db)
     if not project:
@@ -2078,12 +2144,26 @@ def load_project_accounts(project_key: str, status: str = '', group_id: Optional
         like = f'%{keyword}%'
         params.extend([like, like, like])
 
+    tag_clause, tag_params = build_account_tag_filter_clause(
+        tag_ids=tag_ids,
+        tag_match=tag_match,
+        exclude_tag_ids=exclude_tag_ids,
+        include_untagged=include_untagged,
+        account_alias='a',
+    )
+    if tag_clause:
+        sql += f' AND a.id IS NOT NULL AND {tag_clause}'
+        params.extend(tag_params)
+
     sql += ' ORDER BY pa.updated_at DESC, pa.id DESC'
 
     rows = db.execute(sql, params).fetchall()
+    account_ids = [int(row['account_id']) for row in rows if row['account_id'] is not None]
+    tags_by_account = get_account_tags_map(account_ids, db)
     accounts = []
     use_alias_email = parse_bool_flag(project.get('use_alias_email'), False)
     for row in rows:
+        account_id = int(row['account_id']) if row['account_id'] is not None else None
         accounts.append({
             'project_account_id': row['project_account_id'],
             'account_id': row['account_id'],
@@ -2095,6 +2175,7 @@ def load_project_accounts(project_key: str, status: str = '', group_id: Optional
             'group_id': row['current_group_id'] if row['current_group_id'] is not None else row['source_group_id'],
             'group_name': row['current_group_name'] or row['source_group_name'] or '',
             'remark': row['remark'] or '',
+            'tags': tags_by_account.get(account_id, []) if account_id is not None else [],
             'project_status': row['project_status'],
             'account_status': row['account_status'] or '',
             'caller_id': row['caller_id'] or '',

@@ -77,6 +77,23 @@ class ProjectRuntimeTests(unittest.TestCase):
             db.commit()
             return int(cursor.lastrowid)
 
+    def _create_tag(self, name: str, color: str = '#10a37f') -> int:
+        with self.app.app_context():
+            tag_id = web_outlook_app.add_tag(name, color)
+            self.assertIsNotNone(tag_id)
+            return int(tag_id)
+
+    def _tag_account(self, account_id: int, *tag_ids: int):
+        with self.app.app_context():
+            for tag_id in tag_ids:
+                self.assertTrue(web_outlook_app.add_account_tag(account_id, tag_id))
+
+    def _response_emails(self, response):
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload['success'])
+        return [account['email'] for account in payload['accounts']]
+
     def _set_group_sort_order(self, group_id: int, sort_order: int):
         with self.app.app_context():
             db = web_outlook_app.get_db()
@@ -621,6 +638,114 @@ class ProjectRuntimeTests(unittest.TestCase):
         all_payload = all_response.get_json()
         self.assertTrue(all_payload['success'])
         self.assertEqual(all_payload['total'], 3)
+
+    def test_accounts_api_supports_stage_tag_filters(self):
+        register_tag = self._create_tag('chatgpt-registered')
+        plus_tag = self._create_tag('chatgpt-plus')
+        blocked_tag = self._create_tag('blocked')
+        blank_id = self._insert_account('stage-blank@example.com')
+        registered_id = self._insert_account('stage-registered@example.com')
+        plus_id = self._insert_account('stage-plus@example.com')
+        blocked_id = self._insert_account('stage-blocked@example.com')
+        self._tag_account(registered_id, register_tag)
+        self._tag_account(plus_id, register_tag, plus_tag)
+        self._tag_account(blocked_id, register_tag, blocked_tag)
+
+        any_response = self.client.get(
+            f'/api/accounts?tag_ids={register_tag},{plus_tag}&sort_by=email&sort_order=asc'
+        )
+        self.assertEqual(
+            self._response_emails(any_response),
+            ['stage-blocked@example.com', 'stage-plus@example.com', 'stage-registered@example.com']
+        )
+
+        all_response = self.client.get(
+            f'/api/accounts?tag_ids={register_tag},{plus_tag}&tag_match=all&sort_by=email&sort_order=asc'
+        )
+        self.assertEqual(self._response_emails(all_response), ['stage-plus@example.com'])
+
+        untagged_response = self.client.get('/api/accounts?include_untagged=1&sort_by=email&sort_order=asc')
+        self.assertEqual(self._response_emails(untagged_response), ['stage-blank@example.com'])
+
+        staged_or_blank_response = self.client.get(
+            f'/api/accounts?tag_ids={register_tag}&include_untagged=1&exclude_tag_ids={blocked_tag}&sort_by=email&sort_order=asc'
+        )
+        self.assertEqual(
+            self._response_emails(staged_or_blank_response),
+            ['stage-blank@example.com', 'stage-plus@example.com', 'stage-registered@example.com']
+        )
+        self.assertIsInstance(blank_id, int)
+
+    def test_search_and_external_accounts_support_extended_tag_filters(self):
+        with self.app.app_context():
+            self.assertTrue(web_outlook_app.set_setting('external_api_key', 'test-external-key'))
+        register_tag = self._create_tag('search-registered')
+        plus_tag = self._create_tag('search-plus')
+        registered_id = self._insert_account('search-stage-registered@example.com')
+        plus_id = self._insert_account('search-stage-plus@example.com')
+        self._insert_account('search-stage-blank@example.com')
+        self._tag_account(registered_id, register_tag)
+        self._tag_account(plus_id, register_tag, plus_tag)
+
+        search_response = self.client.get(
+            f'/api/accounts/search?q=search-stage&tag_ids={register_tag},{plus_tag}&tag_match=all'
+        )
+        self.assertEqual(self._response_emails(search_response), ['search-stage-plus@example.com'])
+
+        empty_query_response = self.client.get(
+            f'/api/accounts/search?q=&tag_ids={plus_tag}'
+        )
+        self.assertEqual(self._response_emails(empty_query_response), ['search-stage-plus@example.com'])
+
+        external_response = self.client.get(
+            f'/api/external/accounts?tag_ids={register_tag}&exclude_tag_ids={plus_tag}',
+            headers={'X-API-Key': 'test-external-key'}
+        )
+        self.assertEqual(self._response_emails(external_response), ['search-stage-registered@example.com'])
+
+    def test_project_accounts_support_stage_tag_filters(self):
+        target_group_id = self._create_group('ChatGPT 阶段')
+        other_group_id = self._create_group('其他项目')
+        register_tag = self._create_tag('project-registered')
+        plus_tag = self._create_tag('project-plus')
+        blocked_tag = self._create_tag('project-blocked')
+        blank_id = self._insert_account('project-blank@example.com', group_id=target_group_id)
+        registered_id = self._insert_account('project-registered@example.com', group_id=target_group_id)
+        plus_id = self._insert_account('project-plus@example.com', group_id=target_group_id)
+        blocked_id = self._insert_account('project-blocked@example.com', group_id=target_group_id)
+        other_id = self._insert_account('project-other@example.com', group_id=other_group_id)
+        self._tag_account(registered_id, register_tag)
+        self._tag_account(plus_id, register_tag, plus_tag)
+        self._tag_account(blocked_id, register_tag, blocked_tag)
+        self._tag_account(other_id, register_tag)
+        with self.app.app_context():
+            db = web_outlook_app.get_db()
+            db.execute("UPDATE accounts SET provider = 'gmail' WHERE id = ?", (other_id,))
+            db.commit()
+
+        started = self.client.post('/api/projects/start', json={'project_key': 'chatgpt', 'name': 'ChatGPT'}).get_json()
+        self.assertTrue(started['success'])
+
+        untagged = self.client.get('/api/projects/chatgpt/accounts?include_untagged=1').get_json()
+        self.assertTrue(untagged['success'])
+        self.assertEqual({item['email'] for item in untagged['data']['accounts']}, {'project-blank@example.com'})
+
+        all_tags = self.client.get(
+            f'/api/projects/chatgpt/accounts?tag_ids={register_tag},{plus_tag}&tag_match=all'
+        ).get_json()
+        self.assertTrue(all_tags['success'])
+        self.assertEqual([item['email'] for item in all_tags['data']['accounts']], ['project-plus@example.com'])
+        self.assertEqual({tag['id'] for tag in all_tags['data']['accounts'][0]['tags']}, {register_tag, plus_tag})
+
+        filtered = self.client.get(
+            f'/api/projects/chatgpt/accounts?tag_ids={register_tag}&exclude_tag_ids={blocked_tag}&group_id={target_group_id}&provider=outlook&keyword=project'
+        ).get_json()
+        self.assertTrue(filtered['success'])
+        self.assertEqual(
+            {item['email'] for item in filtered['data']['accounts']},
+            {'project-registered@example.com', 'project-plus@example.com'}
+        )
+        self.assertNotIn(blank_id, {item['account_id'] for item in filtered['data']['accounts']})
 
     def test_add_account_without_sort_order_uses_created_at_fallback(self):
         response = self.client.post(

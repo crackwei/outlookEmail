@@ -286,8 +286,10 @@ AI 客户端应优先判断 `success`，再兼容 `error` 既可能是字符串�
 | `offset` | int | 否 | 分页偏移量，默认 `0` |
 | `sort_by` | string | 否 | 排序字段，支持 `created_at`、`email`、`sort_order` |
 | `sort_order` | string | 否 | 排序方向，`asc` 或 `desc`，默认 `desc` |
-| `tag_ids` | string | 否 | 逗号分隔的标签 ID，仅返回包含任一标签的账号 |
-| `include_untagged` | bool | 否 | 与 `tag_ids` 配合使用，是否包含未打标签账号 |
+| `tag_ids` | string | 否 | 逗号分隔的包含标签 ID，默认返回包含任一标签的账号 |
+| `tag_match` | string | 否 | 标签匹配模式：`any` 命中任一 `tag_ids`，`all` 必须同时包含全部 `tag_ids`；默认 `any` |
+| `exclude_tag_ids` | string | 否 | 逗号分隔的排除标签 ID，账号只要包含任一排除标签就不会返回 |
+| `include_untagged` | bool | 否 | 是否包含未打标签账号；未传 `tag_ids` 时表示只返回未打标签账号 |
 
 #### 请求示例
 
@@ -297,6 +299,15 @@ curl -H "X-API-Key: your-api-key" \
 
 curl -H "X-API-Key: your-api-key" \
   "http://localhost:5000/api/external/accounts?group_id=1"
+
+curl -H "X-API-Key: your-api-key" \
+  "http://localhost:5000/api/external/accounts?include_untagged=1"
+
+curl -H "X-API-Key: your-api-key" \
+  "http://localhost:5000/api/external/accounts?tag_ids=1,2&tag_match=all"
+
+curl -H "X-API-Key: your-api-key" \
+  "http://localhost:5000/api/external/accounts?tag_ids=1&exclude_tag_ids=3"
 ```
 
 #### 成功响应示例
@@ -659,6 +670,30 @@ curl -H "X-API-Key: your-api-key" \
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `group_id` | int | 否 | 仅返回指定分组下的账号 |
+| `limit` | int | 否 | 单页条数，最大 `10000`；不传时返回全部匹配账号 |
+| `offset` | int | 否 | 分页偏移量，默认 `0` |
+| `sort_by` | string | 否 | 排序字段，支持 `created_at`、`email`、`sort_order` |
+| `sort_order` | string | 否 | 排序方向，`asc` 或 `desc`，默认 `desc` |
+| `tag_ids` | string | 否 | 逗号分隔的包含标签 ID，默认返回包含任一标签的账号 |
+| `tag_match` | string | 否 | 标签匹配模式：`any` 命中任一 `tag_ids`，`all` 必须同时包含全部 `tag_ids`；默认 `any` |
+| `exclude_tag_ids` | string | 否 | 逗号分隔的排除标签 ID，账号只要包含任一排除标签就不会返回 |
+| `include_untagged` | bool | 否 | 是否包含未打标签账号；未传 `tag_ids` 时表示只返回未打标签账号 |
+
+#### 标签筛选示例
+
+```bash
+# 查询未打任何标签的账号
+curl "http://localhost:5000/api/accounts?include_untagged=1"
+
+# 查询包含任一阶段标签的账号
+curl "http://localhost:5000/api/accounts?tag_ids=1,2"
+
+# 查询同时包含多个阶段标签的账号
+curl "http://localhost:5000/api/accounts?tag_ids=1,2&tag_match=all"
+
+# 查询已注册但未升级 Plus 的账号
+curl "http://localhost:5000/api/accounts?tag_ids=1&exclude_tag_ids=2"
+```
 
 #### 响应重点字段
 
@@ -685,14 +720,16 @@ curl -H "X-API-Key: your-api-key" \
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `q` | string | 是 | 搜索关键词，支持主邮箱、备注、标签、别名邮箱 |
+| `q` | string | 否 | 搜索关键词，支持主邮箱、备注、标签、别名邮箱；为空但存在标签筛选条件时按标签筛选 |
 | `limit` | int | 否 | 单页条数，最大 `10000` |
 | `offset` | int | 否 | 分页偏移量，默认 `0` |
 | `sort_by` | string | 否 | 排序字段，支持 `created_at`、`email`、`sort_order` |
 | `sort_order` | string | 否 | 排序方向，`asc` 或 `desc`，默认 `desc` |
 | `group_id` | int | 否 | 仅搜索指定分组下的账号，不传则搜索全部分组 |
-| `tag_ids` | string | 否 | 逗号分隔的标签 ID，仅搜索包含任一标签的账号 |
-| `include_untagged` | bool | 否 | 与 `tag_ids` 配合使用，是否包含未打标签账号 |
+| `tag_ids` | string | 否 | 逗号分隔的包含标签 ID，默认搜索包含任一标签的账号 |
+| `tag_match` | string | 否 | 标签匹配模式：`any` 命中任一 `tag_ids`，`all` 必须同时包含全部 `tag_ids`；默认 `any` |
+| `exclude_tag_ids` | string | 否 | 逗号分隔的排除标签 ID，账号只要包含任一排除标签就不会返回 |
+| `include_untagged` | bool | 否 | 是否包含未打标签账号；未传 `tag_ids` 时表示只返回未打标签账号 |
 
 ### POST `/api/accounts`
 
@@ -1172,6 +1209,31 @@ user@live.com----password789
 | `group_id` | int | 否 | 按当前分组或项目来源分组过滤 |
 | `provider` | string | 否 | 按邮箱 provider 过滤 |
 | `keyword` | string | 否 | 在邮箱地址、备注里做模糊搜索 |
+| `tag_ids` | string | 否 | 逗号分隔的包含标签 ID，默认返回包含任一标签的项目账号 |
+| `tag_match` | string | 否 | 标签匹配模式：`any` 命中任一 `tag_ids`，`all` 必须同时包含全部 `tag_ids`；默认 `any` |
+| `exclude_tag_ids` | string | 否 | 逗号分隔的排除标签 ID，账号只要包含任一排除标签就不会返回 |
+| `include_untagged` | bool | 否 | 是否包含未打标签账号；未传 `tag_ids` 时表示只返回未打标签账号 |
+
+标签过滤只作用于当前仍存在的普通账号；已删除的历史项目账号不会因为 `include_untagged=1` 被当作无标签账号返回。
+
+#### 标签筛选示例
+
+```bash
+# 查询 chatgpt 项目下未打任何阶段标签的邮箱
+curl "http://localhost:5000/api/projects/chatgpt/accounts?include_untagged=1"
+
+# 查询 chatgpt 项目下已注册成功的邮箱
+curl "http://localhost:5000/api/projects/chatgpt/accounts?tag_ids=1"
+
+# 查询 chatgpt 项目下同时已注册且已升级 Plus 的邮箱
+curl "http://localhost:5000/api/projects/chatgpt/accounts?tag_ids=1,2&tag_match=all"
+
+# 查询 chatgpt 项目下已注册但未升级 Plus 的邮箱
+curl "http://localhost:5000/api/projects/chatgpt/accounts?tag_ids=1&exclude_tag_ids=2"
+
+# 查询 chatgpt 项目下空白邮箱或已注册成功邮箱
+curl "http://localhost:5000/api/projects/chatgpt/accounts?tag_ids=1&include_untagged=1"
+```
 
 #### 成功响应示例
 
@@ -1208,6 +1270,13 @@ user@live.com----password789
         "group_id": 1,
         "group_name": "默认分组",
         "remark": "",
+        "tags": [
+          {
+            "id": 1,
+            "name": "chatgpt-registered",
+            "color": "#10a37f"
+          }
+        ],
         "project_status": "failed",
         "account_status": "active",
         "caller_id": "",
